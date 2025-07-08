@@ -11,35 +11,22 @@ logger = logging.getLogger(__name__)
 
 async def test_remoteprobe():
     """Test the WebSocket remote probe client"""
-    
-    # Create remote probe instance
     probe = RemoteProbe(host="localhost", port=8765)
-    
+
     try:
-        # Test get_drivers
-        logger.info("Testing get_drivers...")
-        await probe.get_drivers()
-        
-        # Test get_devices
         logger.info("Testing get_devices...")
         await probe.get_devices()
         
-        # Test connect
         logger.info("Testing connect...")
         await probe.connect()
         
-        # Test read operation
         logger.info("Testing read operation...")
         try:
             # Read 4 bytes from address 0x20000000 (STM32 RAM)
             # data = await probe.read_u32(0x20000000)
-
             # testing ti dev
             data = await probe.read_u16(0x0000AC25)
-
             logger.info(f"Read data: {data.hex()}")
-
-
         except Exception as e:
             logger.warning(f"Read failed (expected if no device): {e}")
         
@@ -52,27 +39,22 @@ async def test_remoteprobe():
         except Exception as e:
             logger.warning(f"Write failed (expected if no device): {e}")
         
-        # Test disconnect
         logger.info("Testing disconnect...")
         await probe.disconnect()
         
     except Exception as e:
         logger.error(f"Test failed: {e}")
     finally:
-        # Close the WebSocket connection
         await probe.close()
 
 
 async def interactive_test():
     """Interactive test for manual testing"""
-    
     probe = RemoteProbe(host="localhost", port=8765)
     
     try:
         print("RemoteProbe WebSocket Client - Interactive Mode")
-        print("Commands: drivers, devices, connect, disconnect, "
-              "read <addr> <bytes>, write <addr> <hex_data>, quit")
-        
+        print("Available commands: probes, set_probe <name>, devices, connect, disconnect, read <addr> <bytes>, write <addr> <bytes>, quit")
         while True:
             try:
                 command = input("> ").strip().split()
@@ -86,7 +68,8 @@ async def interactive_test():
                 elif cmd == "probes":
                     await probe.get_probe_list()
                 elif cmd == "set_probe":
-                    await probe.set_probe(command[1]) # arg 0 app itself, 1 is the 1st arg
+                    probe_name = command[1]  # TODO: ensure passed name expected
+                    await probe.set_probe(probe_name)
                 elif cmd == "devices":
                     await probe.get_devices()
                 elif cmd == "connect":
@@ -96,29 +79,24 @@ async def interactive_test():
                 elif cmd == "read":
                     # data = await probe.read_u32(0x20000000)
                     data = await probe.read_u16(0x0000AC23)
-
                     print(f"Read data: {hex(data)}")
                 elif cmd == "write":
                     # await probe.write_u32(0x20000000, 0x12345678)
                     await probe.write_u16(0x0000AC23, 0x1234)
                 else:
-                    print("Invalid command. Use: drivers, devices, connect, "
-                          "disconnect, read <addr> <bytes>, "
-                          "write <addr> <hex_data>, quit")
-                    
+                    print("Invalid command")
             except KeyboardInterrupt:
                 break
             except Exception as e:
                 print(f"Error: {e}")
-                
     finally:
         await probe.close()
 
 
 if __name__ == "__main__":
     import sys
-    
+
     if len(sys.argv) > 1 and sys.argv[1] == "--interactive":
         asyncio.run(interactive_test())
     else:
-        asyncio.run(test_remoteprobe()) 
+        asyncio.run(test_remoteprobe())

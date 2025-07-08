@@ -80,7 +80,7 @@ class RemoteProbe(DebugProbe):
         }
         r = await self._send_command(cmd)
 
-        logger.info(f"Got devices: {r['devices']}")
+        logger.info(f"Devices: {r['devices']}")
 
         if r["status"] != 0:
             print(f"fail! {r['msg']}")

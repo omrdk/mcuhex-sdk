@@ -1,38 +1,32 @@
 #!/usr/bin/env python3
 
-import sys
-import os
 import logging
-import signal
 import json
 import asyncio
 import websockets
+import probe
 from probe.dummyprobe import DummyProbe
 from probe.ocd_g474 import OCD_G4x_Probe
 from probe.skolbus_ext import SKolbusEx
 
-import probe
+LOG = logging.getLogger(__name__)
 
-logger = logging.getLogger(__name__)
 
 class WebSocketServer:
     def __init__(self, host="localhost", port=8765):
         """Initialize WebSocket server"""
         self.host = host
         self.port = port
-        self.probe = DummyProbe() #SKolbusEx() # OCD_G4x_Probe(), selected probe
+        self.probe = DummyProbe()  # SKolbusEx() # OCD_G4x_Probe(), selected probe
         self.clients = set()
-        
-        # Initialize probes
+
         probe.init_probes()
-        
 
     async def handle_client(self, websocket):
         """Handle individual WebSocket client connections"""
         self.clients.add(websocket)
-        logger.info(f"Client connected. Total clients: "
-                    f"{len(self.clients)}")
-        
+        LOG.info(f"Client connected. Total clients: {len(self.clients)}")
+
         try:
             async for message in websocket:
                 try:
@@ -46,23 +40,22 @@ class WebSocketServer:
                     }
                     await websocket.send(json.dumps(error_response))
                 except Exception as e:
-                    logger.error(f"Error processing command: {e}")
+                    LOG.error(f"Error processing command: {e}")
                     error_response = {
                         "status": 1,
                         "msg": str(e)
                     }
                     await websocket.send(json.dumps(error_response))
         except websockets.exceptions.ConnectionClosed:
-            logger.info("Client connection closed")
+            LOG.info("Client connection closed")
         finally:
             self.clients.remove(websocket)
-            logger.info(f"Client disconnected. Total clients: "
-                       f"{len(self.clients)}")
+            LOG.info(f"Client disconnected. Total clients: {len(self.clients)}")
 
     async def process_command(self, cmd):
         """Process incoming commands and return responses"""
         response = {"version": 1}
-        logger.info(f"Got command {cmd}")
+        LOG.info(f"Got command {cmd}")
         if cmd["cmd"] == "get_probe_list":
             response["probes"] = probe.get_probe_list()
             response["status"] = 0
@@ -123,16 +116,16 @@ class WebSocketServer:
                 addr = cmd["addr"]
                 nb = cmd["nb"]
 
-                logger.debug(f"Read {nb} bytes from address {addr}")
+                LOG.debug(f"Read {nb} bytes from address {addr}")
 
                 b = await self.probe.read(addr, nb)
                 data = b.hex()
                 response["data"] = data
 
-                logger.debug(f"Got {len(b)} bytes hex data: {data}")
+                LOG.debug(f"Got {len(b)} bytes hex data: {data}")
                 response["status"] = 0
             except Exception as e:
-                logger.error(e)
+                LOG.error(e)
                 response["status"] = 1
                 response["msg"] = str(e)
 
@@ -141,7 +134,7 @@ class WebSocketServer:
                 addr = cmd["addr"]
                 data = cmd["data"]
                 b = bytes.fromhex(data)
-                logger.debug(f"Write {len(b)} bytes to address {addr}")
+                LOG.debug(f"Write {len(b)} bytes to address {addr}")
                 await self.probe.write(addr, b)
                 response["status"] = 0
             except Exception as e:
@@ -151,7 +144,7 @@ class WebSocketServer:
         else:
             response["status"] = 0xFF
             response["msg"] = f"Unknown command {cmd['cmd']}"
-            
+  
         return response
 
     async def broadcast(self, message):
@@ -164,12 +157,12 @@ class WebSocketServer:
     async def start_server(self):
         """Start the WebSocket server"""
         server = await websockets.serve(
-            self.handle_client, 
-            self.host, 
+            self.handle_client,
+            self.host,
             self.port
         )
-        logger.info(f"WebSocket server started on ws://{self.host}:{self.port}")
-        
+        LOG.info(f"WebSocket server started on ws://{self.host}:{self.port}")
+
         # Keep the server running
         await server.wait_closed()
 
@@ -193,13 +186,12 @@ def main():
     else:
         logging.basicConfig(level=logging.INFO)
 
-    # Create and start WebSocket server
     server = WebSocketServer(args.host, args.port)
-    
+
     try:
         asyncio.run(server.start_server())
     except KeyboardInterrupt:
-        logger.info("Server stopped by user")
+        LOG.info("Server stopped by user")
 
 
 if __name__ == "__main__":

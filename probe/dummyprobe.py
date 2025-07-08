@@ -13,8 +13,7 @@ class DummyProbe(DebugProbe):
 
     def get_device_list(self):
         port_list = []
-
-        port_list.append({
+        port_list.append({ ""
         "device": "/dev/ttyUSB0",
         "description": "USB Serial Device",
         "hwid": "USB VID:PID=0403:6001",

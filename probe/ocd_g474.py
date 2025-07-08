@@ -1,3 +1,4 @@
+import os
 import logging
 
 from pyocd.core.helpers import ConnectHelper
@@ -12,17 +13,40 @@ from typing import Optional
 
 LOG = logging.getLogger("kdb-probe")
 
+"""
+Supported Devices and boards
+Supported Devices : Name
+STM32G431xx, STM32G441xx
+STM32G471xx
+STM32G473xx, STM32G483xx
+STM32G474xx, STM32G484xx
+STM32G491xx, STM32G4A1xx
+
+Supported Boards : Name 	Reference
+NUCLEO-G431KB Nucleo32 kit 	MB1430 A-01
+NUCLEO-G431RB Nucleo kit 	MB1367 C-01
+NUCLEO-G474RE Nucleo kit 	MB1367 C-01
+STM32G474E-EVAL Evaluation Board 	MB1397 B-01
+B-G474E-DPOW1 Discovery Kit 	MB1428 B-01
+NUCLEO-G491RE Nucleo kit 	MB1367-G491RE C-04
+"""
+
 
 class OCD_G4x_Probe(DebugProbe):
-
     def __init__(self):
         super().__init__()
 
-        pack_path = ("/Users/merdak/Projects/probe/"
-                     "Keil.STM32G4xx_DFP.1.4.0.pack")
-        z = zipfile.ZipFile(pack_path, 'r')  # TODO
-        pack = cmsis_pack.CmsisPack(z)
-        pack_target.PackTargets.populate_targets_from_pack(pack)
+        dir = os.path.dirname(os.path.abspath(__file__))
+        pack_path = dir + "/Keil.STM32G4xx_DFP.1.4.0.pack" # TODO: update to v2.0.0 if needed
+        print(pack_path)
+
+        try:
+            z = zipfile.ZipFile(pack_path, 'r')  # TODO
+            pack = cmsis_pack.CmsisPack(z)
+            pack_target.PackTargets.populate_targets_from_pack(pack)
+        except Exception as e:
+            print(f"Error loading pack: {e}, provide stm32fg4 dfp pack")
+            return
 
         self.session: Optional[Session] = None
         self.target: Optional[SoCTarget] = None
@@ -31,24 +55,14 @@ class OCD_G4x_Probe(DebugProbe):
         session = ConnectHelper.session_with_chosen_probe(
             blocking=False, auto_open=False
         )
-        print(session)
-        session.open()    # Manually open the session.
-
-        target = session.target
-        # target.elf = "/Users/dak/hadrone/build/hadrone.elf"  # TODO
+        session.open()
 
         self.session = session
-        self.target = target
+        self.target = session.target
         LOG.info("session open, probe = " + repr(session.probe.product_name))
-        # provider = ELFSymbolProvider(target.elf)
-        # adr = provider.get_symbol_value("deneme")
-        # v = target.read32(adr)
-        # print(v)
-        # pc = target.read_core_register("pc")
-        # print("pc: 0x%X" % pc)
 
     async def disconnect(self):
-        self.session.close()  # Close the session and connection.
+        self.session.close()
         LOG.info("session closed")
 
     async def read(self, addr, nb: int):
