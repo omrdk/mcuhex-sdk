@@ -3,10 +3,142 @@
 import asyncio
 import logging
 from probe.remoteprobe import RemoteProbe
+from typing import Dict, Tuple, Callable, List
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class InteractiveCommandHandler:
+    def __init__(self, probe: RemoteProbe):
+        self.probe = probe
+        self._setup_command_handlers()
+
+    def _setup_command_handlers(self):
+        """Setup command handlers for interactive mode"""
+        self._CMD_HANDLERS: Dict[str, Tuple[Callable, int, bool]] = {
+            # Command name: (handler_method, required_args, is_async)
+            'probes': (self._handle_probes, 0, True),
+            'set_probe': (self._handle_set_probe, 1, True),
+            'devices': (self._handle_devices, 0, True),
+            'connect': (self._handle_connect, 0, True),
+            'disconnect': (self._handle_disconnect, 0, True),
+            'read': (self._handle_read, 2, True),
+            'write': (self._handle_write, 2, True),
+            'quit': (self._handle_quit, 0, False),
+            'help': (self._handle_help, 0, False),
+        }
+
+    async def execute_command(self, command_parts: List[str]) -> bool:
+        """
+        Polymorphic command executor for interactive mode
+        Returns True if should continue, False if should quit
+        """
+        if not command_parts:
+            return True
+        
+        cmd_name = command_parts[0].lower()
+        
+        if cmd_name not in self._CMD_HANDLERS:
+            print(f"Unknown command: {cmd_name}")
+            print("Type 'help' for available commands")
+            return True
+        
+        handler, required_args, is_async = self._CMD_HANDLERS[cmd_name]
+        
+        # Validate argument count
+        if len(command_parts) - 1 < required_args:
+            print(f"Command '{cmd_name}' requires {required_args} arguments")
+            return True
+        
+        try:
+            if is_async:
+                result = await handler(command_parts)
+            else:
+                result = handler(command_parts)
+            
+            return result
+            
+        except Exception as e:
+            print(f"Error executing command '{cmd_name}': {e}")
+            return True
+
+    # Command handlers
+    async def _handle_probes(self, command_parts: List[str]) -> bool:
+        """Handle probes command"""
+        await self.probe.get_probe_list()
+        return True
+
+    async def _handle_set_probe(self, command_parts: List[str]) -> bool:
+        """Handle set_probe command"""
+        probe_name = command_parts[1]
+        await self.probe.set_probe(probe_name)
+        return True
+
+    async def _handle_devices(self, command_parts: List[str]) -> bool:
+        """Handle devices command"""
+        await self.probe.get_devices()
+        return True
+
+    async def _handle_connect(self, command_parts: List[str]) -> bool:
+        """Handle connect command"""
+        await self.probe.connect()
+        return True
+
+    async def _handle_disconnect(self, command_parts: List[str]) -> bool:
+        """Handle disconnect command"""
+        await self.probe.disconnect()
+        return True
+
+    async def _handle_read(self, command_parts: List[str]) -> bool:
+        """Handle read command"""
+        addr = int(command_parts[1], 0)  # Auto-detect hex/decimal
+        nb = int(command_parts[2])
+        
+        try:
+            data = await self.probe.read(addr, nb)
+            print(f"Read {len(data)} bytes from 0x{addr:X}: {data.hex()}")
+        except Exception as e:
+            print(f"Read failed: {e}")
+        
+        return True
+
+    async def _handle_write(self, command_parts: List[str]) -> bool:
+        """Handle write command"""
+        addr = int(command_parts[1], 0)  # Auto-detect hex/decimal
+        data_hex = command_parts[2]
+        
+        try:
+            data = bytes.fromhex(data_hex)
+            await self.probe.write(addr, data)
+            print(f"Wrote {len(data)} bytes to 0x{addr:X}: {data.hex()}")
+        except Exception as e:
+            print(f"Write failed: {e}")
+        
+        return True
+
+    def _handle_quit(self, command_parts: List[str]) -> bool:
+        """Handle quit command"""
+        print("Goodbye!")
+        return False
+
+    def _handle_help(self, command_parts: List[str]) -> bool:
+        """Handle help command"""
+        print("Available commands:")
+        print("  probes                    - List available probes")
+        print("  set_probe <name>          - Set probe type")
+        print("  devices                   - List available devices")
+        print("  connect                   - Connect to device")
+        print("  disconnect                - Disconnect from device")
+        print("  read <addr> <bytes>       - Read memory (addr in hex/dec)")
+        print("  write <addr> <hex_data>   - Write memory (addr in hex/dec)")
+        print("  help                      - Show this help")
+        print("  quit                      - Exit interactive mode")
+        print("\nExamples:")
+        print("  read 0x20000000 4         - Read 4 bytes from 0x20000000")
+        print("  write 0x20000000 12345678 - Write hex data to address")
+        return True
 
 
 async def test_remoteprobe():
@@ -49,43 +181,26 @@ async def test_remoteprobe():
 
 
 async def interactive_test():
-    """Interactive test for manual testing"""
+    """Interactive test for manual testing using polymorphic command handling"""
     probe = RemoteProbe(host="localhost", port=8765)
+    handler = InteractiveCommandHandler(probe)
     
     try:
         print("RemoteProbe WebSocket Client - Interactive Mode")
-        print("Available commands: probes, set_probe <name>, devices, connect, disconnect, read <addr> <bytes>, write <addr> <bytes>, quit")
+        print("Type 'help' for available commands")
+        
         while True:
             try:
                 command = input("> ").strip().split()
                 if not command:
                     continue
                 
-                cmd = command[0].lower()
-                
-                if cmd == "quit":
+                should_continue = await handler.execute_command(command)
+                if not should_continue:
                     break
-                elif cmd == "probes":
-                    await probe.get_probe_list()
-                elif cmd == "set_probe":
-                    probe_name = command[1]  # TODO: ensure passed name expected
-                    await probe.set_probe(probe_name)
-                elif cmd == "devices":
-                    await probe.get_devices()
-                elif cmd == "connect":
-                    await probe.connect()
-                elif cmd == "disconnect":
-                    await probe.disconnect()
-                elif cmd == "read":
-                    # data = await probe.read_u32(0x20000000)
-                    data = await probe.read_u16(0x0000AC23)
-                    print(f"Read data: {hex(data)}")
-                elif cmd == "write":
-                    # await probe.write_u32(0x20000000, 0x12345678)
-                    await probe.write_u16(0x0000AC23, 0x1234)
-                else:
-                    print("Invalid command")
+                    
             except KeyboardInterrupt:
+                print("\nGoodbye!")
                 break
             except Exception as e:
                 print(f"Error: {e}")
