@@ -126,14 +126,14 @@ class InteractiveCommandHandler:
     def _handle_help(self, command_parts: List[str]) -> bool:
         """Handle help command"""
         print("Available commands:")
-        print("  probes                    - List available probes")
-        print("  set_probe <name>          - Set probe type")
         print("  devices                   - List available devices")
         print("  connect                   - Connect to device")
         print("  disconnect                - Disconnect from device")
+        print("  probes                    - List available probes")
+        print("  set_probe <name>          - Set probe type")
         print("  read <addr> <bytes>       - Read memory (addr in hex/dec)")
         print("  write <addr> <hex_data>   - Write memory (addr in hex/dec)")
-        print("  help                      - Show this help")
+        print("  help                      - Show this help"    )
         print("  quit                      - Exit interactive mode")
         print("\nExamples:")
         print("  read 0x20000000 4         - Read 4 bytes from 0x20000000")
