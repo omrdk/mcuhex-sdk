@@ -5,11 +5,165 @@ import json
 import asyncio
 import websockets
 import probe
+
+from probe.debugprobe import DebugProbe
 from probe.dummyprobe import DummyProbe
 from probe.ocd_g474 import OCD_G4x_Probe
 from probe.skolbus_ext import SKolbusEx
 
+from typing import Dict, Tuple, Callable, Any, Optional
+
 LOG = logging.getLogger(__name__)
+
+
+class CommandHandler:
+    def __init__(self, probe: DebugProbe):
+        self.probe = probe
+        self._setup_command_handlers()
+
+    def _setup_command_handlers(self):
+        """Setup command handlers with proper argument validation"""
+        self._CMD_HANDLERS: Dict[str, Tuple[Callable, int, bool]] = {
+            # Command name: (handler_method, required_args, is_async)
+            'hello': (self._handle_hello, 1, False),
+            'get_probe_list': (self._handle_get_probe_list, 0, False),
+            'set_probe': (self._handle_set_probe, 1, False),
+            'get_driver_list': (self._handle_get_driver_list, 0, False),
+            'get_device_list': (self._handle_get_device_list, 0, False),
+            'connect': (self._handle_connect, 0, True),
+            'disconnect': (self._handle_disconnect, 0, True),
+            'read': (self._handle_read, 2, True),
+            'write': (self._handle_write, 2, True),
+        }
+
+    async def execute_command(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Polymorphic command executor - single entry point for all commands
+        """
+        response = {"version": 1}
+        command_name = cmd.get("cmd")
+        
+        if not command_name:
+            return self._create_error_response("No command specified")
+        
+        if command_name not in self._CMD_HANDLERS:
+            return self._create_error_response(
+                f"Unknown command: {command_name}")
+        
+        handler, required_args, is_async = self._CMD_HANDLERS[command_name]
+        
+        # Validate argument count
+        if len(cmd) - 1 < required_args:  # -1 for "cmd" key
+            return self._create_error_response(
+                f"Command '{command_name}' requires {required_args} "
+                f"arguments"
+            )
+        
+        try:
+            if is_async:
+                result = await handler(cmd)
+            else:
+                result = handler(cmd)
+            
+            response.update(result)
+            response["status"] = 0
+            return response
+            
+        except Exception as e:
+            LOG.error(f"Error executing command '{command_name}': {e}")
+            return self._create_error_response(str(e))
+
+    def _create_error_response(self, msg: str, status: int = 1) -> Dict[str, Any]:
+        """Create standardized error response"""
+        return {
+            "version": 1,
+            "status": status,
+            "msg": msg
+        }
+
+    def _create_success_response(self, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Create standardized success response"""
+        response = {"status": 0}
+        if data:
+            response.update(data)
+        return response
+
+    # Command handlers
+    def _handle_hello(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle hello command"""
+        msg = cmd.get("msg", "World")
+        return self._create_success_response({"msg": f"Hello dak, {msg}"})
+
+    def _handle_get_probe_list(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle get_probe_list command"""
+        probes = probe.get_probe_list()
+        return self._create_success_response({"probes": probes})
+
+    def _handle_set_probe(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle set_probe command"""
+        probe_name = cmd.get("probe_name")
+        if not probe_name:
+            raise ValueError("Probe name is required")
+        
+        probe_map = {
+            "OCD_G4x_Probe": OCD_G4x_Probe,
+            "SKolbusEx": SKolbusEx,
+            "DummyProbe": DummyProbe
+        }
+        
+        if probe_name not in probe_map:
+            raise ValueError(f"Unknown probe type: {probe_name}")
+        
+        self.probe = probe_map[probe_name]()
+        return self._create_success_response({"msg": "Probe set successfully"})
+
+    def _handle_get_driver_list(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle get_driver_list command"""
+        class_names = self.probe.get_driver_list()
+        return self._create_success_response({"drivers": class_names})
+
+    def _handle_get_device_list(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle get_device_list command"""
+        devices = self.probe.get_device_list()
+        return self._create_success_response({"devices": devices})
+
+    async def _handle_connect(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle connect command"""
+        await self.probe.connect()
+        return self._create_success_response()
+
+    async def _handle_disconnect(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle disconnect command"""
+        await self.probe.disconnect()
+        return self._create_success_response()
+
+    async def _handle_read(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle read command"""
+        addr = cmd.get("addr")
+        nb = cmd.get("nb")
+        
+        if addr is None or nb is None:
+            raise ValueError("Both 'addr' and 'nb' are required for read command")
+        
+        LOG.debug(f"Read {nb} bytes from address {addr}")
+        b = await self.probe.read(addr, nb)
+        data = b.hex()
+        
+        LOG.debug(f"Got {len(b)} bytes hex data: {data}")
+        return self._create_success_response({"data": data})
+
+    async def _handle_write(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle write command"""
+        addr = cmd.get("addr")
+        data = cmd.get("data")
+        
+        if addr is None or data is None:
+            raise ValueError("Both 'addr' and 'data' are required for write command")
+        
+        b = bytes.fromhex(data)
+        LOG.debug(f"Write {len(b)} bytes to address {addr}")
+        await self.probe.write(addr, b)
+        return self._create_success_response()
 
 
 class WebSocketServer:
@@ -17,8 +171,9 @@ class WebSocketServer:
         """Initialize WebSocket server"""
         self.host = host
         self.port = port
-        self.probe = DummyProbe()  # SKolbusEx() # OCD_G4x_Probe(), selected probe
+        self.probe = DummyProbe()  # SKolbusEx() # OCD_G4x_Probe(), select probe first
         self.clients = set()
+        self.handler = CommandHandler(self.probe)
 
         probe.init_probes()
 
@@ -53,99 +208,9 @@ class WebSocketServer:
             LOG.info(f"Client disconnected. Total clients: {len(self.clients)}")
 
     async def process_command(self, cmd):
-        """Process incoming commands and return responses"""
-        response = {"version": 1}
+        """Process incoming commands using polymorphic handler"""
         LOG.info(f"Got command {cmd}")
-        if cmd["cmd"] == "get_probe_list":
-            response["probes"] = probe.get_probe_list()
-            response["status"] = 0
-        elif cmd["cmd"] == "set_probe":
-            probe_name = cmd["probe_name"]
-            if probe_name == "OCD_G4x_Probe":
-                self.probe = OCD_G4x_Probe()
-                response["status"] = 0
-                response["msg"] = "Probe set successfully"
-                return response
-            elif probe_name == "SKolbusEx":
-                self.probe = SKolbusEx()  # TODO: SKolbusExt için probe oluştur
-                response["status"] = 0
-                response["msg"] = "Probe set successfully"
-                return response
-            else:
-                self.probe = DummyProbe()
-                response["status"] = 1
-                response["msg"] = "Probe name is required"
-                return response
-            
-        elif cmd["cmd"] == "get_driver_list":
-            try:
-                class_names = self.probe.get_driver_list()
-                response["drivers"] = class_names
-                response["status"] = 0
-            except Exception as e:
-                response["status"] = 1
-                response["msg"] = str(e)
-                
-        elif cmd["cmd"] == "get_device_list":
-            try:
-                response["devices"] = self.probe.get_device_list()
-                response["status"] = 0
-            except Exception as e:
-                response["status"] = 1
-                response["msg"] = str(e)
-                
-        elif cmd["cmd"] == "connect":
-            try:
-                # Note: uri is not used in current implementation
-                await self.probe.connect()
-                response["status"] = 0
-            except Exception as e:
-                response["status"] = 1
-                response["msg"] = str(e)
-                
-        elif cmd["cmd"] == "disconnect":
-            try:
-                await self.probe.disconnect()
-                response["status"] = 0
-            except Exception as e:
-                response["status"] = 1
-                response["msg"] = str(e)
-                
-        elif cmd["cmd"] == "read":
-            try:
-                addr = cmd["addr"]
-                nb = cmd["nb"]
-
-                LOG.debug(f"Read {nb} bytes from address {addr}")
-
-                b = await self.probe.read(addr, nb)
-                data = b.hex()
-                response["data"] = data
-
-                LOG.debug(f"Got {len(b)} bytes hex data: {data}")
-                response["status"] = 0
-            except Exception as e:
-                LOG.error(e)
-                response["status"] = 1
-                response["msg"] = str(e)
-
-        elif cmd["cmd"] == "write":
-            try:
-                addr = cmd["addr"]
-                data = cmd["data"]
-                b = bytes.fromhex(data)
-                LOG.debug(f"Write {len(b)} bytes to address {addr}")
-                await self.probe.write(addr, b)
-                response["status"] = 0
-            except Exception as e:
-                response["status"] = 1
-                response["msg"] = str(e)
-
-        else:
-            response["status"] = 0xFF
-            response["msg"] = f"Unknown command {cmd['cmd']}"
-  
-        return response
+        return await self.handler.execute_command(cmd)
 
     async def broadcast(self, message):
         """Broadcast message to all connected clients"""
