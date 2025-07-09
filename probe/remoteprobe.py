@@ -49,6 +49,18 @@ class RemoteProbe(DebugProbe):
             self.connected = False
             raise
 
+    async def get_devices(self):
+        cmd = {
+            "cmd": "get_device_list",
+        }
+        r = await self._send_command(cmd)
+
+        logger.info(f"Devices: {r['devices']}")
+
+        if r["status"] != 0:
+            print(f"fail! {r['msg']}")
+            raise Exception(r["msg"])
+
     async def get_probe_list(self):
         cmd = {
             "cmd": "get_probe_list",
@@ -74,22 +86,10 @@ class RemoteProbe(DebugProbe):
             print(f"fail! {r['msg']}")
             raise Exception(r["msg"])
 
-    async def get_devices(self):
-        cmd = {
-            "cmd": "get_device_list",
-        }
-        r = await self._send_command(cmd)
-
-        logger.info(f"Devices: {r['devices']}")
-
-        if r["status"] != 0:
-            print(f"fail! {r['msg']}")
-            raise Exception(r["msg"])
-
     async def connect(self):
         cmd = {
             "cmd": "connect",
-            "uri": "COM1"
+            "uri": "COM1"  # TODO: 
         }
         print(f"Connecting to {cmd['uri']} ...", end=' ')
         resp = await self._send_command(cmd)

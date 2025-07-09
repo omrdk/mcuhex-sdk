@@ -25,11 +25,10 @@ class CommandHandler:
         """Setup command handlers with proper argument validation"""
         self._CMD_HANDLERS: Dict[str, Tuple[Callable, int, bool]] = {
             # Command name: (handler_method, required_args, is_async)
-            'hello': (self._handle_hello, 1, False),
+            'get_device_list': (self._handle_get_device_list, 0, False),
             'get_probe_list': (self._handle_get_probe_list, 0, False),
             'set_probe': (self._handle_set_probe, 1, False),
             'get_driver_list': (self._handle_get_driver_list, 0, False),
-            'get_device_list': (self._handle_get_device_list, 0, False),
             'connect': (self._handle_connect, 0, True),
             'disconnect': (self._handle_disconnect, 0, True),
             'read': (self._handle_read, 2, True),
@@ -89,11 +88,6 @@ class CommandHandler:
         return response
 
     # Command handlers
-    def _handle_hello(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle hello command"""
-        msg = cmd.get("msg", "World")
-        return self._create_success_response({"msg": f"Hello dak, {msg}"})
-
     def _handle_get_probe_list(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """Handle get_probe_list command"""
         probes = probe.get_probe_list()

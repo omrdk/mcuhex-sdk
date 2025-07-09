@@ -19,11 +19,11 @@ class InteractiveCommandHandler:
         """Setup command handlers for interactive mode"""
         self._CMD_HANDLERS: Dict[str, Tuple[Callable, int, bool]] = {
             # Command name: (handler_method, required_args, is_async)
-            'probes': (self._handle_probes, 0, True),
-            'set_probe': (self._handle_set_probe, 1, True),
             'devices': (self._handle_devices, 0, True),
             'connect': (self._handle_connect, 0, True),
             'disconnect': (self._handle_disconnect, 0, True),
+            'probes': (self._handle_probes, 0, True),
+            'set_probe': (self._handle_set_probe, 1, True),
             'read': (self._handle_read, 2, True),
             'write': (self._handle_write, 2, True),
             'quit': (self._handle_quit, 0, False),
@@ -64,6 +64,12 @@ class InteractiveCommandHandler:
             print(f"Error executing command '{cmd_name}': {e}")
             return True
 
+
+    async def _handle_devices(self, command_parts: List[str]) -> bool:
+        """Handle devices command"""
+        await self.probe.get_devices()
+        return True
+
     # Command handlers
     async def _handle_probes(self, command_parts: List[str]) -> bool:
         """Handle probes command"""
@@ -74,11 +80,6 @@ class InteractiveCommandHandler:
         """Handle set_probe command"""
         probe_name = command_parts[1]
         await self.probe.set_probe(probe_name)
-        return True
-
-    async def _handle_devices(self, command_parts: List[str]) -> bool:
-        """Handle devices command"""
-        await self.probe.get_devices()
         return True
 
     async def _handle_connect(self, command_parts: List[str]) -> bool:
