@@ -21,7 +21,7 @@ class SKolbusEx(DebugProbe):
         self.lock = threading.Lock()
         self.print()
         self.serial = aioserial.AioSerial()
-        self.serial.port = "/dev/tty.usbmodemCL3910781"  #"/dev/ttyACM0"  # "/dev/cu.usbserial-1130"
+        self.serial.port = "/dev/tty.usbmodemCL3910781"  # /dev/tty.usbmodemCL3910781 # "/dev/ttyACM0"  # "/dev/cu.usbserial-1130"
         self.serial.baudrate = 460800
         self.serial.bytesize = aioserial.EIGHTBITS
         self.serial.parity   = aioserial.PARITY_NONE
@@ -37,7 +37,7 @@ class SKolbusEx(DebugProbe):
             print("opening serial port:", self.serial.port)
             self.serial.open()
 
-    def disconnect(self):
+    async def disconnect(self):
         with self.lock:
             self.serial.close()
 
