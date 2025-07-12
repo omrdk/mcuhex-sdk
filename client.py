@@ -20,9 +20,9 @@ class InteractiveCommandHandler:
         self._CMD_HANDLERS: Dict[str, Tuple[Callable, int, bool]] = {
             # Command name: (handler_method, required_args, is_async)
             'devices': (self._handle_devices, 0, True),
+            'probes': (self._handle_probes, 0, True),
             'connect': (self._handle_connect, 0, True),
             'disconnect': (self._handle_disconnect, 0, True),
-            'probes': (self._handle_probes, 0, True),
             'set_probe': (self._handle_set_probe, 1, True),
             'read': (self._handle_read, 2, True),
             'write': (self._handle_write, 2, True),
@@ -67,13 +67,13 @@ class InteractiveCommandHandler:
 
     async def _handle_devices(self, command_parts: List[str]) -> bool:
         """Handle devices command"""
-        await self.probe.get_devices()
+        await self.probe.list_devices()
         return True
 
     # Command handlers
     async def _handle_probes(self, command_parts: List[str]) -> bool:
         """Handle probes command"""
-        await self.probe.get_probe_list()
+        await self.probe.list_probes()
         return True
 
     async def _handle_set_probe(self, command_parts: List[str]) -> bool:

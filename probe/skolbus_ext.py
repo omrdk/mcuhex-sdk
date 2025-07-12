@@ -21,21 +21,29 @@ class SKolbusEx(DebugProbe):
         self.lock = threading.Lock()
         self.print()
         self.serial = aioserial.AioSerial()
-        self.serial.port = "/dev/tty.usbmodemCL3910781"  # /dev/tty.usbmodemCL3910781 # "/dev/ttyACM0"  # "/dev/cu.usbserial-1130"
+        self.serial.port = "COM1"  # /dev/tty.usbmodemCL3910781 # "/dev/ttyACM0"  # "/dev/cu.usbserial-1130" # /dev/tty.usbmodemCL3910781
         self.serial.baudrate = 460800
         self.serial.bytesize = aioserial.EIGHTBITS
         self.serial.parity   = aioserial.PARITY_NONE
         self.serial.stopbits = aioserial.STOPBITS_ONE
         self.serial.timeout = 2
 
-        
+    def set_port(self, port: str):
+        # TODO: Handle if is_open
+        self.serial.port = port
+        print(f"Port number set to {port}")
+
     def is_open(self):
         return self.serial.is_open
 
-    async def connect(self):
+    async def connect(self) -> bool:
         with self.lock:
-            print("opening serial port:", self.serial.port)
-            self.serial.open()
+            if not self.serial.is_open:
+                print("Opening serial port:", self.serial.port)
+                self.serial.open()
+            else:
+                print("Serial port already open.")
+        return self.serial.is_open
 
     async def disconnect(self):
         with self.lock:

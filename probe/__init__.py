@@ -18,7 +18,7 @@ def init_probes():
     logger.info(CLASSES)
 
 
-def get_probe_list():
+def list_probes():
     """Get the list of probes."""
     class_names = []
     for name in CLASSES:

@@ -1,6 +1,6 @@
 import struct
 import threading
-
+import serial
 
 class DebugProbe(object):
     """@brief Abstract debug probe class.
@@ -12,7 +12,24 @@ class DebugProbe(object):
         """@brief Constructor."""
         self._lock = threading.Lock()
 
+    def list_devices(self):
+        port_list = []
+        ports = serial.tools.list_ports.comports()
+        
+        for port in ports:
+            port_info = {
+                "device": port.device,
+                "description": port.description,
+                "manufacturer": port.manufacturer,
+            }
+            port_list.append(port_info)
+
+        return port_list
+
     def is_open(self):
+        raise NotImplementedError()
+    
+    def set_port(self, port: str):
         raise NotImplementedError()
 
     async def connect(self):
@@ -43,6 +60,7 @@ class DebugProbe(object):
         the lock actually be released and other threads allowed access.
         """
         self._lock.release()
+
 
     # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
     #                                READ FUNCTIONS                               #

@@ -25,11 +25,11 @@ class CommandHandler:
         """Setup command handlers with proper argument validation"""
         self._CMD_HANDLERS: Dict[str, Tuple[Callable, int, bool]] = {
             # Command name: (handler_method, required_args, is_async)
-            'get_device_list': (self._handle_get_device_list, 0, False),
-            'get_probe_list': (self._handle_get_probe_list, 0, False),
+            'list_devices': (self._handle_list_devices, 0, False),
+            'list_probes': (self._handle_list_probes, 0, False),
             'set_probe': (self._handle_set_probe, 1, False),
             'get_driver_list': (self._handle_get_driver_list, 0, False),
-            'connect': (self._handle_connect, 0, True),
+            'connect': (self._handle_connect, 1, True),
             'disconnect': (self._handle_disconnect, 0, True),
             'read': (self._handle_read, 2, True),
             'write': (self._handle_write, 2, True),
@@ -88,9 +88,9 @@ class CommandHandler:
         return response
 
     # Command handlers
-    def _handle_get_probe_list(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
+    def _handle_list_probes(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """Handle get_probe_list command"""
-        probes = probe.get_probe_list()
+        probes = probe.list_probes()
         return self._create_success_response({"probes": probes})
 
     def _handle_set_probe(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
@@ -116,15 +116,20 @@ class CommandHandler:
         class_names = self.probe.get_driver_list()
         return self._create_success_response({"drivers": class_names})
 
-    def _handle_get_device_list(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
+    def _handle_list_devices(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """Handle get_device_list command"""
-        devices = self.probe.get_device_list()
-        return self._create_success_response({"devices": devices})
+        devices = self.probe.list_devices()
+        response = self._create_success_response({"devices": devices})
+        return response
 
     async def _handle_connect(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """Handle connect command"""
-        await self.probe.connect()
-        return self._create_success_response()
+        print(f"Connecting lo: {cmd}")
+        if not cmd or not cmd["uri"]:
+            return self._create_error_response("No device uri specified")
+        self.probe.set_port(cmd["uri"])
+        is_open = await self.probe.connect()
+        return self._create_success_response({"is_open": is_open})
 
     async def _handle_disconnect(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """Handle disconnect command"""
@@ -161,11 +166,11 @@ class CommandHandler:
 
 
 class WebSocketServer:
-    def __init__(self, host="localhost", port=8765):
+    def __init__(self, host="ws://127.0.0.1", port=8765):
         """Initialize WebSocket server"""
         self.host = host
         self.port = port
-        self.probe = DummyProbe()  # SKolbusEx() # OCD_G4x_Probe(), select probe first
+        self.probe = SKolbusEx() # DummyProbe()  # SKolbusEx() # OCD_G4x_Probe(), select probe first
         self.clients = set()
         self.handler = CommandHandler(self.probe)
 

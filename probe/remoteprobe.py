@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 class RemoteProbe(DebugProbe):
 
-    def __init__(self, host="localhost", port=8765):
+    def __init__(self, host="ws://127.0.0.1", port=8765):
         super().__init__()
         
         self.host = host
@@ -51,7 +51,7 @@ class RemoteProbe(DebugProbe):
 
     async def get_devices(self):
         cmd = {
-            "cmd": "get_device_list",
+            "cmd": "list_devices",
         }
         r = await self._send_command(cmd)
 
@@ -61,9 +61,9 @@ class RemoteProbe(DebugProbe):
             print(f"fail! {r['msg']}")
             raise Exception(r["msg"])
 
-    async def get_probe_list(self):
+    async def list_probes(self):
         cmd = {
-            "cmd": "get_probe_list",
+            "cmd": "list_probes",
         }
         r = await self._send_command(cmd)
 
