@@ -39,7 +39,11 @@ class CommandHandler:
         """
         Polymorphic command executor - single entry point for all commands
         """
-        response = {"version": 1}
+        response = {
+            "version": 1,
+            **({"id": cmd["id"]} if "id" in cmd else {})
+        }
+        LOG.info(f"Got command {cmd}")
         command_name = cmd.get("cmd")
         
         if not command_name:
@@ -124,7 +128,6 @@ class CommandHandler:
 
     async def _handle_connect(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """Handle connect command"""
-        print(f"Connecting lo: {cmd}")
         if not cmd or not cmd["uri"]:
             return self._create_error_response("No device uri specified")
         self.probe.set_port(cmd["uri"])
@@ -133,8 +136,8 @@ class CommandHandler:
 
     async def _handle_disconnect(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """Handle disconnect command"""
-        await self.probe.disconnect()
-        return self._create_success_response()
+        is_open = await self.probe.disconnect()
+        return self._create_success_response({"is_open": is_open})
 
     async def _handle_read(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """Handle read command"""
@@ -186,6 +189,7 @@ class WebSocketServer:
                 try:
                     cmd = json.loads(message)
                     response = await self.process_command(cmd)
+                    LOG.info(f"Sending response: {json.dumps(response)}")
                     await websocket.send(json.dumps(response))
                 except json.JSONDecodeError:
                     error_response = {

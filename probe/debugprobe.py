@@ -29,7 +29,7 @@ class DebugProbe(object):
     def is_open(self):
         raise NotImplementedError()
     
-    def set_port(self, port: str):
+    async def set_port(self, port: str):
         raise NotImplementedError()
 
     async def connect(self):

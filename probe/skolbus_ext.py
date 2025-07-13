@@ -18,7 +18,7 @@ class SKolbusEx(DebugProbe):
     WR_32 = 0x90
 
     def __init__(self):
-        self.lock = threading.Lock()
+        self.lock = asyncio.Lock()
         self.print()
         self.serial = aioserial.AioSerial()
         self.serial.port = "COM1"  # /dev/tty.usbmodemCL3910781 # "/dev/ttyACM0"  # "/dev/cu.usbserial-1130" # /dev/tty.usbmodemCL3910781
@@ -37,17 +37,18 @@ class SKolbusEx(DebugProbe):
         return self.serial.is_open
 
     async def connect(self) -> bool:
-        with self.lock:
+        async with self.lock:
             if not self.serial.is_open:
                 print("Opening serial port:", self.serial.port)
                 self.serial.open()
             else:
                 print("Serial port already open.")
-        return self.serial.is_open
+            return self.serial.is_open
 
-    async def disconnect(self):
-        with self.lock:
+    async def disconnect(self) -> bool:
+        async with self.lock:
             self.serial.close()
+            return self.serial.is_open
 
     async def test(self):
         encoded_string = "a_string".encode()
