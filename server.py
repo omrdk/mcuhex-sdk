@@ -173,7 +173,7 @@ class WebSocketServer:
         """Initialize WebSocket server"""
         self.host = host
         self.port = port
-        self.probe = SKolbusEx() # DummyProbe()  # SKolbusEx() # OCD_G4x_Probe(), select probe first
+        self.probe = OCD_G4x_Probe() # DummyProbe()  # SKolbusEx() # OCD_G4x_Probe(), select probe first
         self.clients = set()
         self.handler = CommandHandler(self.probe)
 

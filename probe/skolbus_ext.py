@@ -94,7 +94,7 @@ class SKolbusEx(DebugProbe):
         self.frame(a.WR_16, 0x000CBBAA, 4, bytearray([1, 2, 3, 4, 5, 6, 7, 8]))
 
     async def read(self, addr, nb: int):
-        with self.lock:
+        async with self.lock:
             cmd = self.RD_16
             nw = nb // 2
             if (nb % 4) == 0: cmd = self.RD_32
@@ -111,7 +111,7 @@ class SKolbusEx(DebugProbe):
             return rxbuf[4:nb+4]
 
     async def write(self, addr, data: bytes):
-        with self.lock:
+        async with self.lock:
             if data is None:
                 raise
             cmd = self.WR_16

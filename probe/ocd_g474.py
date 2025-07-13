@@ -51,7 +51,7 @@ class OCD_G4x_Probe(DebugProbe):
         self.session: Optional[Session] = None
         self.target: Optional[SoCTarget] = None
 
-    async def connect(self):
+    async def connect(self) -> bool:
         session = ConnectHelper.session_with_chosen_probe(
             blocking=False, auto_open=False
         )
@@ -60,10 +60,12 @@ class OCD_G4x_Probe(DebugProbe):
         self.session = session
         self.target = session.target
         LOG.info("session open, probe = " + repr(session.probe.product_name))
+        return session.is_open
 
-    async def disconnect(self):
+    async def disconnect(self) -> bool:
         self.session.close()
         LOG.info("session closed")
+        return self.session.is_open
 
     async def read(self, addr, nb: int):
         ls = self.target.read_memory_block8(addr, nb)
