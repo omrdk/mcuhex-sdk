@@ -17,13 +17,17 @@ class DebugProbe(object):
         ports = serial.tools.list_ports.comports()
         
         for port in ports:
-            port_info = {
-                "device": port.device,
-                "description": port.description,
-                "manufacturer": port.manufacturer,
-            }
-            port_list.append(port_info)
-
+            if port.vid and port.pid:
+                port_info = {
+                    "device": port.device,
+                    "description":  port.description,
+                    "manufacturer": port.manufacturer,
+                    "vid":          port.vid,
+                    "pid":          port.pid,
+                    "hwid":         port.hwid,
+                    "product":      port.product
+                }
+                port_list.append(port_info)
         return port_list
 
     def is_open(self):
