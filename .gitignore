@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+
+build/lib/
+scripts/
+
+# PyInstaller
+desktop/build/build/
+desktop/build/dist/
+desktop/build/.build-venv/
+
+# Data
+data/
+
+# Out-of-tree drivers (OCD/serial) kept local for future work; only SWD ships
+probe/ocd_g474.py
+probe/skolbus_ext.py
+probe/ocd_esp32c3.py
+
+# macOS
+.DS_Store
+
+# LLM
+CLAUDE.md
+.claude/

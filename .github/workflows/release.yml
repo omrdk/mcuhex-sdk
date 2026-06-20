@@ -1,0 +1,157 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+run-name: Release ${{ github.ref_name }}
+
+jobs:
+  verify-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Ensure tag matches desktop/config.py VERSION
+        id: check
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CFG=$(python -c 'from desktop.config import VERSION; print(VERSION)')
+          if [ "$TAG" != "$CFG" ]; then
+            echo "Tag v$TAG does not match desktop/config.py VERSION=$CFG" >&2
+            exit 1
+          fi
+          echo "version=$CFG" >> "$GITHUB_OUTPUT"
+
+  build-macos:
+    needs: verify-version
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install . --no-deps --force-reinstall
+          pip install -r desktop/requirements-desktop.txt
+
+      - name: Build with PyInstaller
+        working-directory: desktop/build
+        run: pyinstaller mcuhex.spec --noconfirm
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Create DMG
+        env:
+          VERSION: ${{ needs.verify-version.outputs.version }}
+        run: |
+          create-dmg \
+            --volname "MCUHex" \
+            --volicon "desktop/resources/icon.icns" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 128 \
+            --icon "MCUHex.app" 150 185 \
+            --app-drop-link 450 185 \
+            --hide-extension "MCUHex.app" \
+            --no-internet-enable \
+            "desktop/build/dist/MCUHex-${VERSION}-macos-arm64.dmg" \
+            "desktop/build/dist/MCUHex.app"
+
+      - name: Create ZIP of .app
+        working-directory: desktop/build/dist
+        env:
+          VERSION: ${{ needs.verify-version.outputs.version }}
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            "MCUHex.app" \
+            "MCUHex-${VERSION}-macos-arm64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            desktop/build/dist/MCUHex-${{ needs.verify-version.outputs.version }}-macos-arm64.zip
+            desktop/build/dist/MCUHex-${{ needs.verify-version.outputs.version }}-macos-arm64.dmg
+          retention-days: 7
+
+  build-windows:
+    needs: verify-version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install . --no-deps --force-reinstall
+          pip install -r desktop/requirements-desktop.txt
+
+      - name: Build with PyInstaller
+        shell: pwsh
+        working-directory: desktop/build
+        run: pyinstaller mcuhex.spec --noconfirm
+
+      - name: Create ZIP
+        shell: pwsh
+        working-directory: desktop/build/dist
+        env:
+          VERSION: ${{ needs.verify-version.outputs.version }}
+        run: |
+          Compress-Archive -Path "MCUHex" -DestinationPath "MCUHex-$env:VERSION-windows-amd64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: desktop/build/dist/MCUHex-${{ needs.verify-version.outputs.version }}-windows-amd64.zip
+          retention-days: 7
+
+  publish:
+    needs: [verify-version, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify-version.outputs.version }}
+        working-directory: dist
+        run: |
+          # Version-less asset names so the web app can link to the stable
+          # /releases/latest/download/<asset> URL without hardcoding a version.
+          mv "MCUHex-${VERSION}-macos-arm64.zip"   "MCUHex-macos-arm64.zip"
+          mv "MCUHex-${VERSION}-macos-arm64.dmg"   "MCUHex-macos-arm64.dmg"
+          mv "MCUHex-${VERSION}-windows-amd64.zip" "MCUHex-windows-amd64.zip"
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "MCUHex $TAG" \
+            --notes "MCUHex SDK $TAG" \
+            "MCUHex-macos-arm64.zip" \
+            "MCUHex-macos-arm64.dmg" \
+            "MCUHex-windows-amd64.zip"

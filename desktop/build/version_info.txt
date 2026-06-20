@@ -1,0 +1,33 @@
+# PyInstaller version resource for Windows MCUHex.exe
+# Populates Properties → Details fields in Windows Explorer.
+# Keep the filevers/prodvers/StringStruct versions in sync with desktop/config.py VERSION.
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(0, 0, 1, 0),
+    prodvers=(0, 0, 1, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0),
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        '040904B0',
+        [
+          StringStruct('CompanyName', 'MCUHex'),
+          StringStruct('FileDescription', 'MCUHex SDK Tray App'),
+          StringStruct('FileVersion', '0.0.1'),
+          StringStruct('InternalName', 'MCUHex'),
+          StringStruct('LegalCopyright', '\u00a9 2026 MCUHex'),
+          StringStruct('OriginalFilename', 'MCUHex.exe'),
+          StringStruct('ProductName', 'MCUHex'),
+          StringStruct('ProductVersion', '0.0.1'),
+        ]
+      )
+    ]),
+    VarFileInfo([VarStruct('Translation', [0x0409, 1200])])
+  ]
+)
