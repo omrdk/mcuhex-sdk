@@ -27,3 +27,6 @@ probe/ocd_esp32c3.py
 # LLM
 CLAUDE.md
 .claude/
+
+# Test artifacts
+.coverage
