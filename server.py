@@ -842,10 +842,11 @@ class CommandHandler:
         return self._pack_cache
 
     def _get_installed_target_names(self) -> set:
-        """Return a set of lowercased target names already installed locally."""
+        """Return a set of lowercased part numbers from locally installed packs."""
         try:
             from pyocd.target.pack.pack_target import ManagedPacks
-            return {t.lower() for t in ManagedPacks.get_installed_targets()}
+            # get_installed_targets() yields CmsisPackDevice objects, not strings
+            return {d.part_number.lower() for d in ManagedPacks.get_installed_targets()}
         except Exception as e:
             LOG.debug(f"Could not enumerate installed packs: {e}")
             return set()
@@ -972,15 +973,22 @@ class CommandHandler:
 
             await loop.run_in_executor(None, register)
 
-            installed_now = self._get_installed_target_names()
-            await websocket.send(json.dumps({
+            installed_ok = target.lower() in self._get_installed_target_names()
+            payload = {
                 "type": "pack_complete",
                 "install_id": install_id,
-                "success": True,
+                "success": installed_ok,
                 "target": target,
-                "installed": target.lower() in installed_now,
-            }))
-            LOG.info(f"Pack for {target} installed")
+                "installed": installed_ok,
+            }
+            if not installed_ok:
+                payload["error_code"] = ErrorCode.CORTEX_M_UNSUPPORTED_TARGET
+                payload["msg"] = f"Pack downloaded but '{target}' did not register as installed"
+            await websocket.send(json.dumps(payload))
+            if installed_ok:
+                LOG.info(f"Pack for {target} installed")
+            else:
+                LOG.error(f"Pack for {target} downloaded but target not registered")
 
         except asyncio.CancelledError:
             try:
@@ -1028,6 +1036,15 @@ class CommandHandler:
             ManagedPacks.populate_target(target)
         except Exception as e:
             LOG.debug(f"populate_target({target}) skipped: {e}")
+
+        # An override that does not resolve would only fail later, at connect
+        # time, with an unclassified pyOCD error — reject it up front instead.
+        from pyocd.target import TARGET, normalise_target_type_name
+        if normalise_target_type_name(target) not in TARGET:
+            raise ProbeError(
+                f"Target '{target}' is not available. Install its support pack first.",
+                ErrorCode.CORTEX_M_UNSUPPORTED_TARGET,
+            )
 
         self._target_overrides[uri] = target
         if hasattr(self.probe, 'set_target_override'):
