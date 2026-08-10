@@ -191,6 +191,74 @@ def test_search_survives_broken_pack_enumeration(handler, monkeypatch):
     assert resp["results"][0]["installed"] is False
 
 
+# --- Device listing ---
+
+
+class FakeBoardInfo:
+    def __init__(self, name, target):
+        self.name = name
+        self.target = target
+
+
+class FakePyocdProbe:
+    def __init__(self, uid, board_info=None, board_error=None):
+        self.unique_id = uid
+        self.description = uid
+        self.vendor_name = "STMicroelectronics"
+        self.product_name = "ST-Link"
+        self._board_info = board_info
+        self._board_error = board_error
+
+    @property
+    def associated_board_info(self):
+        if self._board_error:
+            raise self._board_error
+        return self._board_info
+
+
+def list_devices_with(handler, monkeypatch, probes):
+    import probe.pyocd_probe as pp
+
+    monkeypatch.setattr(
+        pp.ConnectHelper, "get_all_connected_probes", staticmethod(lambda blocking=False: probes)
+    )
+    monkeypatch.setattr("serial.tools.list_ports.comports", lambda: [])
+    resp = send(handler, {"cmd": "list_devices"})
+    assert resp["status"] == 0
+    return resp["devices"]
+
+
+def test_dev_board_exposes_target_hint(handler, monkeypatch):
+    devices = list_devices_with(
+        handler,
+        monkeypatch,
+        [FakePyocdProbe("usb://nucleo", FakeBoardInfo("NUCLEO-G071RB", "stm32g071rbtx"))],
+    )
+
+    assert devices[0]["target_hint"] == "stm32g071rbtx"
+    assert devices[0]["board_name"] == "NUCLEO-G071RB"
+    assert devices[0]["family"] == "ARM Cortex-M"
+
+
+def test_bare_probe_lists_without_target_hint(handler, monkeypatch):
+    devices = list_devices_with(handler, monkeypatch, [FakePyocdProbe("usb://stlink")])
+
+    assert devices[0]["device"] == "usb://stlink"
+    assert "target_hint" not in devices[0]
+    assert "board_name" not in devices[0]
+
+
+def test_probe_with_failing_board_query_still_lists(handler, monkeypatch):
+    devices = list_devices_with(
+        handler,
+        monkeypatch,
+        [FakePyocdProbe("usb://busy", board_error=RuntimeError("device busy"))],
+    )
+
+    assert devices[0]["device"] == "usb://busy"
+    assert "target_hint" not in devices[0]
+
+
 def test_failed_download_is_reported_with_message(handler):
     handler._pack_cache = FakeCache(
         index={PART: {"name": PART}}, fail_download=RuntimeError("network down")

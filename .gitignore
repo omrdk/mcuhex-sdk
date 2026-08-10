@@ -30,3 +30,4 @@ CLAUDE.md
 
 # Test artifacts
 .coverage
+.pytest_cache/

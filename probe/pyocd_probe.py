@@ -129,6 +129,16 @@ class PyOCDProbe(DebugProbe):
                     "manufacturer": getattr(probe, 'vendor_name', None),
                     "product": getattr(probe, 'product_name', None),
                 }
+                # May briefly open the USB device and fails when another
+                # debugger holds it — the hint is optional, never fatal.
+                try:
+                    board_info = probe.associated_board_info
+                    if board_info:
+                        probe_dict["board_name"] = board_info.name
+                        if board_info.target:
+                            probe_dict["target_hint"] = board_info.target
+                except Exception as e:
+                    LOG.debug(f"Board info unavailable for {probe.unique_id}: {e}")
                 result.append(probe_dict)
             return result
         except Exception as e:
