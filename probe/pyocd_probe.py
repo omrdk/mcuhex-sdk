@@ -145,6 +145,20 @@ class PyOCDProbe(DebugProbe):
             LOG.error(f"Failed to list probes: {e}")
             return []
 
+    def is_device_present(self, unique_id: str) -> Optional[bool]:
+        """Whether the given probe is still enumerated on USB.
+
+        Returns None when enumeration itself failed: an empty probe list is
+        indistinguishable from "the last probe was unplugged", so callers must
+        be able to tell "gone" from "could not tell".
+        """
+        try:
+            probes = ConnectHelper.get_all_connected_probes(blocking=False)
+        except Exception as e:
+            LOG.debug(f"Probe enumeration failed: {e}")
+            return None
+        return any(p.unique_id == unique_id for p in probes)
+
     def get_driver_list(self):
         return []
 

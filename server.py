@@ -30,11 +30,18 @@ LOG = logging.getLogger(__name__)
 # The web client treats a silence several times this long as a stalled install.
 PACK_HEARTBEAT_SECS = 5
 
+# How often an open session re-checks that its probe is still on the bus, and
+# how many consecutive misses it takes to call the device gone. Enumeration can
+# blink under USB contention, so a single miss is not enough.
+DEVICE_WATCH_SECS = 3
+DEVICE_WATCH_MISSES = 2
+
 
 class ErrorCode:
     """Structured error codes sent to the frontend."""
     NO_DEVICES = "NO_DEVICES_FOUND"
     DEVICE_BUSY = "DEVICE_BUSY"
+    DEVICE_DISCONNECTED = "DEVICE_DISCONNECTED"
     PERMISSION_DENIED = "PERMISSION_DENIED"
     CONNECT_TIMEOUT = "CONNECT_TIMEOUT"
     PROBE_MISMATCH = "PROBE_DRIVER_MISMATCH"
@@ -90,6 +97,8 @@ class CommandHandler:
         self._flash_task: Optional[asyncio.Task] = None
         self._cancel_flash: bool = False
         self._pack_task: Optional[asyncio.Task] = None
+        self._device_watch_task: Optional[asyncio.Task] = None
+        self._connected_uri: Optional[str] = None
         self._websocket = None  # set per-client in handle_client
         self._device_probe_map: Dict[str, str] = {}
         # Per-device target overrides (device_uri -> pyocd target name)
@@ -242,6 +251,8 @@ class CommandHandler:
         # Lazy import: server_thread imports this module, so a top-level import
         # would be circular. DEMO_KWARGS is the single source of demo settings.
         from desktop.server_thread import DEMO_KWARGS
+        self._stop_device_watch()
+        self._connected_uri = None
         self.probe = DummyProbe(**DEMO_KWARGS)
         LOG.info("Entered demo mode via WebSocket (DummyProbe + DEMO_KWARGS)")
         self._notify_state_change()
@@ -325,12 +336,89 @@ class CommandHandler:
         target_info = self.probe.get_target_info()
         if target_info:
             data["target"] = target_info
+        if is_open:
+            self._connected_uri = uri
+            self._start_device_watch()
         return self._create_success_response(data)
 
     async def _handle_disconnect(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """Handle disconnect command"""
+        self._stop_device_watch()
         is_open = await self.probe.disconnect()
         return self._create_success_response({"is_open": is_open})
+
+    def _start_device_watch(self) -> None:
+        """Watch the connected probe so an unplug is noticed while idle.
+
+        pyOCD has no hotplug signal — it only raises once a transfer is
+        attempted — so an idle session would keep claiming to be connected
+        until the user tried to read something. Probes that cannot answer the
+        presence question are simply not watched.
+        """
+        self._stop_device_watch()
+        if not hasattr(self.probe, 'is_device_present'):
+            return
+        self._device_watch_task = asyncio.create_task(
+            self._run_device_watch(self._websocket, self._connected_uri)
+        )
+
+    def _stop_device_watch(self) -> None:
+        if self._device_watch_task and not self._device_watch_task.done():
+            self._device_watch_task.cancel()
+        self._device_watch_task = None
+
+    async def _run_device_watch(self, websocket, uri: str) -> None:
+        loop = asyncio.get_event_loop()
+        misses = 0
+        while True:
+            await asyncio.sleep(DEVICE_WATCH_SECS)
+            if not self.probe.is_open() or self._connected_uri != uri:
+                return
+            # Flash and capture own the probe while they run, and both report
+            # a lost device through their own error paths.
+            if self._flash_task and not self._flash_task.done():
+                continue
+            if self._capture_task and not self._capture_task.done():
+                continue
+
+            present = await loop.run_in_executor(
+                None, self.probe.is_device_present, uri
+            )
+            if present is None:  # could not tell — never guess it is gone
+                continue
+            if present:
+                misses = 0
+                continue
+
+            misses += 1
+            if misses < DEVICE_WATCH_MISSES:
+                continue
+
+            LOG.info(f"Probe {uri} disappeared from the bus — closing session")
+            self._connected_uri = None
+            self._device_watch_task = None
+            try:
+                await self.probe.disconnect()
+            except Exception as e:
+                LOG.warning(f"Releasing the lost probe failed: {e}")
+            # No "status" key on purpose: clients route replies by id and fall
+            # back to matching on status, so a push carrying one would be
+            # mistaken for the answer to whatever command is in flight.
+            await self._push_device_lost(websocket, uri)
+            return
+
+    async def _push_device_lost(self, websocket, uri: str) -> None:
+        if websocket is None:
+            return
+        try:
+            await websocket.send(json.dumps({
+                "type": "device_lost",
+                "device": uri,
+                "error_code": ErrorCode.DEVICE_DISCONNECTED,
+                "msg": "Debug probe was unplugged",
+            }))
+        except Exception as e:
+            LOG.debug(f"device_lost push failed: {e}")
 
     async def _handle_read(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """Handle read command"""
@@ -1198,6 +1286,8 @@ class WebSocketServer:
                 self.handler._cancel_flash = True
                 self.handler._flash_task.cancel()
                 self.handler._flash_task = None
+            # The watcher pushes to this socket, so it dies with the client
+            self.handler._stop_device_watch()
             self.clients.remove(websocket)
             LOG.info(f"Client disconnected. Total clients: {len(self.clients)}")
             # Release the probe session when the last client goes away so a
