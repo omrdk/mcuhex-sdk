@@ -118,6 +118,7 @@ class CommandHandler:
             'cancel_flash': (self._handle_cancel_flash, 0, True),
             'search_targets': (self._handle_search_targets, 0, False),
             'install_pack': (self._handle_install_pack, 1, True),
+            'cancel_pack': (self._handle_cancel_pack, 0, True),
             'set_target': (self._handle_set_target, 1, False),
             'get_target_info_ext': (self._handle_get_target_info_ext, 0, False),
         }
@@ -917,6 +918,13 @@ class CommandHandler:
             self._run_install_pack(self._websocket, target, install_id)
         )
         return self._create_success_response({"msg": "pack_install_started"})
+
+    async def _handle_cancel_pack(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
+        """Cancel an active pack install."""
+        if self._pack_task and not self._pack_task.done():
+            self._pack_task.cancel()
+            return self._create_success_response({"msg": "pack_install_cancelled"})
+        return self._create_success_response({"msg": "no_active_pack_install"})
 
     async def _run_install_pack(self, websocket, target, install_id):
         """Background pack install. Emits pack_progress + pack_complete push messages."""

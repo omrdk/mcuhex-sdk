@@ -210,6 +210,34 @@ def test_slow_download_emits_heartbeats(handler, monkeypatch):
     ]
     assert len(heartbeats) >= 2
 
+
+def test_cancel_during_download_reports_cancelled(handler):
+    handler._pack_cache = FakeCache(index={PART: {"name": PART}}, download_delay=0.5)
+
+    async def flow():
+        await handler.execute_command({"cmd": "install_pack", "target": PART, "id": 7})
+        task = handler._pack_task
+        await asyncio.sleep(0.1)
+        resp = await handler.execute_command({"cmd": "cancel_pack"})
+        assert resp["msg"] == "pack_install_cancelled"
+        await asyncio.gather(task, return_exceptions=True)
+
+    run(flow())
+
+    done = handler._websocket.messages[-1]
+    assert done["type"] == "pack_complete"
+    assert done["success"] is False
+    assert done["error_code"] == ErrorCode.FLASH_CANCELLED
+    assert handler._pack_task is None
+
+
+def test_cancel_without_active_install_is_harmless(handler):
+    resp = send(handler, {"cmd": "cancel_pack"})
+
+    assert resp["status"] == 0
+    assert resp["msg"] == "no_active_pack_install"
+
+
 # --- Device listing ---
 
 
