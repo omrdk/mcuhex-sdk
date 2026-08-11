@@ -22,7 +22,7 @@ except ImportError:
     OCD_ESP32C3_Probe = None
 
 from typing import Dict, Tuple, Callable, Any, Optional
-from desktop.config import VERSION
+from desktop.config import VERSION, ALLOWED_ORIGINS
 
 LOG = logging.getLogger(__name__)
 
@@ -1319,7 +1319,8 @@ class WebSocketServer:
         self._ws_server = await websockets.serve(
             self.handle_client,
             self.host,
-            self.port
+            self.port,
+            origins=ALLOWED_ORIGINS
         )
         LOG.info(f"WebSocket server started on ws://{self.host}:{self.port}")
 
