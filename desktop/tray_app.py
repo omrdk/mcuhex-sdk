@@ -77,16 +77,6 @@ class MCUHexTray:
     def _on_open_web(self, icon, item):
         webbrowser.open(WEB_APP_URL)
 
-    def _on_toggle_server(self, icon, item):
-        if self._server.is_running:
-            self._server.stop()
-        else:
-            self._server.restart(probe_name="PyOCDProbe", probe_kwargs={})
-        self._update_icon()
-
-    def _server_toggle_text(self, _=None):
-        return "Stop Server" if self._server.is_running else "Start Server"
-
     def _on_toggle_demo(self, icon, item):
         if self._server.is_demo:
             # Exit demo → switch back to real probe
@@ -141,7 +131,6 @@ class MCUHexTray:
             pystray.MenuItem(self._server_status_text, None, enabled=False),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Open MCUHex", self._on_open_web, default=True),
-            pystray.MenuItem(self._server_toggle_text, self._on_toggle_server),
             pystray.MenuItem("Demo Mode", self._on_toggle_demo, checked=self._demo_checked),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(f"Port: {DEFAULT_PORT}", None, enabled=False),
