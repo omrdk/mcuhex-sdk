@@ -2,6 +2,7 @@
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pyocd.target
 from pyocd.target.pack import pack_target
 
+import server as server_mod
 from server import CommandHandler, ErrorCode
 
 
@@ -32,9 +34,10 @@ class FakePackDevice:
 class FakeCache:
     """Stand-in for cmsis_pack_manager.Cache."""
 
-    def __init__(self, index, fail_download=None):
+    def __init__(self, index, fail_download=None, download_delay=0):
         self.index = index
         self._fail_download = fail_download
+        self._download_delay = download_delay
 
     def cache_descriptors(self):
         pass
@@ -42,6 +45,8 @@ class FakeCache:
     def packs_for_devices(self, devices):
         if self._fail_download:
             raise self._fail_download
+        if self._download_delay:
+            time.sleep(self._download_delay)
 
 
 class FakeWebSocket:
@@ -190,6 +195,20 @@ def test_search_survives_broken_pack_enumeration(handler, monkeypatch):
     assert resp["status"] == 0
     assert resp["results"][0]["installed"] is False
 
+
+def test_slow_download_emits_heartbeats(handler, monkeypatch):
+    monkeypatch.setattr(server_mod, "PACK_HEARTBEAT_SECS", 0.03)
+    handler._pack_cache = FakeCache(index={PART: {"name": PART}}, download_delay=0.15)
+    set_installed(monkeypatch, [PART])
+
+    done = run(install_and_wait(handler, PART))
+
+    assert done["success"] is True
+    heartbeats = [
+        m for m in handler._websocket.messages
+        if m["type"] == "pack_progress" and "Still downloading" in m["msg"]
+    ]
+    assert len(heartbeats) >= 2
 
 # --- Device listing ---
 

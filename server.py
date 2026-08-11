@@ -26,6 +26,10 @@ from desktop.config import VERSION
 
 LOG = logging.getLogger(__name__)
 
+# Interval between pack_progress heartbeats during long pack operations.
+# The web client treats a silence several times this long as a stalled install.
+PACK_HEARTBEAT_SECS = 5
+
 
 class ErrorCode:
     """Structured error codes sent to the frontend."""
@@ -926,6 +930,19 @@ class CommandHandler:
             except Exception as e:
                 LOG.error(f"Pack push failed: {e}")
 
+        async def run_with_heartbeat(fn, phase, msg):
+            # Pack downloads can run for minutes with no observable progress;
+            # keep pushing so the client can tell "slow" from "dead".
+            future = loop.run_in_executor(None, fn)
+            started = time.monotonic()
+            while True:
+                done, _ = await asyncio.wait({future}, timeout=PACK_HEARTBEAT_SECS)
+                if done:
+                    return future.result()
+                push({"type": "pack_progress", "install_id": install_id,
+                      "phase": phase,
+                      "msg": f"{msg} ({int(time.monotonic() - started)}s)"})
+
         push({"type": "pack_progress", "install_id": install_id,
               "phase": "preparing", "msg": "Checking index..."})
 
@@ -939,7 +956,7 @@ class CommandHandler:
                           "phase": "indexing", "msg": "Downloading pack index..."})
                     cache.cache_descriptors()
 
-            await loop.run_in_executor(None, ensure_index)
+            await run_with_heartbeat(ensure_index, "indexing", "Downloading pack index...")
 
             index = cache.index or {}
             if target not in index:
@@ -958,7 +975,9 @@ class CommandHandler:
                 # cmsis_pack_manager downloads all packs covering the requested device
                 cache.packs_for_devices([index[target]])
 
-            await loop.run_in_executor(None, do_install)
+            await run_with_heartbeat(
+                do_install, "downloading", f"Still downloading pack for {target}..."
+            )
 
             push({"type": "pack_progress", "install_id": install_id,
                   "phase": "registering",
