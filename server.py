@@ -1013,6 +1013,34 @@ class CommandHandler:
             LOG.debug(f"Could not enumerate installed packs: {e}")
             return set()
 
+    @staticmethod
+    def _pick_memories(memories: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Pick the flash and RAM regions to show for a part.
+
+        Region *names* differ per vendor ('IROM1', 'Flash', 'External_Flash'),
+        so the access flags decide instead. Flash is the boot region rather than
+        the sum of every executable region: on parts that map external QSPI or a
+        second bank, a sum reports a size the chip does not have.
+        """
+        def largest(regions):
+            return max(regions, key=lambda r: r.get("size") or 0, default={})
+
+        flash_candidates = []
+        ram_candidates = []
+        for region in memories.values():
+            access = region.get("access") or {}
+            if access.get("execute") and not access.get("write"):
+                flash_candidates.append(region)
+            elif access.get("write"):
+                ram_candidates.append(region)
+
+        boot = next((r for r in flash_candidates if r.get("startup")), None)
+        default_ram = [r for r in ram_candidates if r.get("default")]
+        return (
+            boot or largest(flash_candidates),
+            largest(default_ram or ram_candidates),
+        )
+
     def _handle_search_targets(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """Search the CMSIS-Pack index for targets matching a query string."""
         query = (cmd.get("query") or "").strip().lower()
@@ -1040,9 +1068,7 @@ class CommandHandler:
             name_lower = name.lower()
             if query and query not in name_lower:
                 continue
-            memories = meta.get("memories") or {}
-            flash_region = memories.get("IROM1") or memories.get("ROM1") or {}
-            ram_region = memories.get("IRAM1") or memories.get("RAM1") or {}
+            flash_region, ram_region = self._pick_memories(meta.get("memories") or {})
             from_pack = meta.get("from_pack") or {}
             results.append({
                 "name": name,

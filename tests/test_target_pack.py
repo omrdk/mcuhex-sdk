@@ -42,7 +42,13 @@ class FakeCache:
     def cache_descriptors(self):
         pass
 
+    # Resolving which packs cover a device costs nothing; downloading them is the
+    # slow part that can fail. A fake that collapsed the two is what let a version
+    # ship where no pack was ever downloaded.
     def packs_for_devices(self, devices):
+        return [f"pack:{d.get('name')}" for d in devices]
+
+    def download_pack_list(self, pack_list):
         if self._fail_download:
             raise self._fail_download
         if self._download_delay:
