@@ -1137,8 +1137,9 @@ class CommandHandler:
                   "msg": f"Downloading pack for {target}..."})
 
             def do_install():
-                # cmsis_pack_manager downloads all packs covering the requested device
-                cache.packs_for_devices([index[target]])
+                # packs_for_devices only resolves which packs cover the device;
+                # download_pack_list is what actually fetches them.
+                cache.download_pack_list(cache.packs_for_devices([index[target]]))
 
             await run_with_heartbeat(
                 do_install, "downloading", f"Still downloading pack for {target}..."
