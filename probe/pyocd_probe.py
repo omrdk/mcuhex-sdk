@@ -83,7 +83,25 @@ class PyOCDProbe(DebugProbe):
         return {
             "part_number": getattr(self.target, 'part_number', None),
             "probe_name": getattr(self.session.probe, 'product_name', None),
+            "can_program": self._has_boot_memory(),
         }
+
+    def _has_boot_memory(self) -> bool:
+        """Whether this session's target can be programmed.
+
+        pyOCD falls back to a generic target when it cannot identify the part,
+        which debugs fine but carries no flash geometry. Asking for the boot
+        memory is the same question the programmer asks before it writes, so a
+        caller learns now instead of after choosing a firmware file.
+        """
+        memory_map = getattr(self.target, 'memory_map', None)
+        if memory_map is None:
+            return False
+        try:
+            return memory_map.get_boot_memory() is not None
+        except Exception as e:
+            LOG.debug(f"Boot memory lookup failed: {e}")
+            return False
 
     async def disconnect(self) -> bool:
         if self.session is None:
