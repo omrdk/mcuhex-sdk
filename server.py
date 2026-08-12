@@ -36,6 +36,10 @@ PACK_HEARTBEAT_SECS = 5
 DEVICE_WATCH_SECS = 3
 DEVICE_WATCH_MISSES = 2
 
+# How often the bus is rescanned while no session is open, so plugging a board
+# in shows up in the client's device list without the user asking for a refresh.
+BUS_WATCH_SECS = 1
+
 
 class ErrorCode:
     """Structured error codes sent to the frontend."""
@@ -98,9 +102,14 @@ class CommandHandler:
         self._cancel_flash: bool = False
         self._pack_task: Optional[asyncio.Task] = None
         self._device_watch_task: Optional[asyncio.Task] = None
+        self._bus_watch_task: Optional[asyncio.Task] = None
         self._connected_uri: Optional[str] = None
         self._websocket = None  # set per-client in handle_client
         self._device_probe_map: Dict[str, str] = {}
+        # Device ids from the last scan, whoever asked for it; None until the
+        # first one, so the watcher can tell "nothing plugged" from "not yet
+        # looked" and does not announce a change that never happened.
+        self._known_devices: Optional[tuple] = None
         # Per-device target overrides (device_uri -> pyocd target name)
         self._target_overrides: Dict[str, str] = {}
         self._pack_cache = None  # lazy-loaded cmsis_pack_manager.Cache
@@ -277,8 +286,12 @@ class CommandHandler:
             }
             return self._create_success_response(data)
 
+        return self._create_success_response({"devices": self._scan_devices()})
+
+    def _scan_devices(self) -> list:
+        """Enumerate every probe family on the bus. Blocking (USB enumeration)."""
         all_devices = []
-        self._device_probe_map = {}
+        probe_map: Dict[str, str] = {}
         pyocd_uids = set()
 
         # ARM Cortex-M: scan via PyOCD (CMSIS-DAP probes)
@@ -286,7 +299,7 @@ class CommandHandler:
             for d in PyOCDProbe().list_devices():
                 d['family'] = 'ARM Cortex-M'
                 all_devices.append(d)
-                self._device_probe_map[d['device']] = 'PyOCDProbe'
+                probe_map[d['device']] = 'PyOCDProbe'
                 pyocd_uids.add(d['device'])
         except Exception as e:
             LOG.debug(f"PyOCD scan skipped: {e}")
@@ -298,12 +311,16 @@ class CommandHandler:
                     continue
                 if d.get('vid') == ESPRESSIF_VID:
                     d['family'] = 'ESP32'
-                    self._device_probe_map[d['device']] = 'OCD_ESP32C3_Probe'
+                    probe_map[d['device']] = 'OCD_ESP32C3_Probe'
                 all_devices.append(d)
         except Exception as e:
             LOG.debug(f"USB serial scan skipped: {e}")
 
-        return self._create_success_response({"devices": all_devices})
+        # Rebound in one step: connect() reads this map, and a half-filled one
+        # would pick the wrong probe class for a device.
+        self._device_probe_map = probe_map
+        self._known_devices = tuple(sorted(d['device'] for d in all_devices))
+        return all_devices
 
     async def _handle_connect(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """Handle connect command — auto-switches probe based on device family."""
@@ -406,6 +423,49 @@ class CommandHandler:
             # mistaken for the answer to whatever command is in flight.
             await self._push_device_lost(websocket, uri)
             return
+
+    def _start_bus_watch(self, websocket) -> None:
+        """Watch the bus for boards appearing and disappearing between sessions.
+
+        Only while no session is open: a connected probe is already covered by
+        the device watch, and rescanning the bus under an open session buys
+        nothing while competing with it for the same USB device.
+        """
+        self._stop_bus_watch()
+        self._bus_watch_task = asyncio.create_task(self._run_bus_watch(websocket))
+
+    def _stop_bus_watch(self) -> None:
+        if self._bus_watch_task and not self._bus_watch_task.done():
+            self._bus_watch_task.cancel()
+        self._bus_watch_task = None
+
+    async def _run_bus_watch(self, websocket) -> None:
+        loop = asyncio.get_event_loop()
+        while True:
+            await asyncio.sleep(BUS_WATCH_SECS)
+            if self.probe.is_open() or getattr(self.probe, 'demo', False):
+                continue
+            before = self._known_devices
+            try:
+                devices = await loop.run_in_executor(None, self._scan_devices)
+            except Exception as e:
+                LOG.debug(f"Bus scan skipped: {e}")
+                continue
+            if self._known_devices == before:
+                continue
+            await self._push_devices_changed(websocket, devices)
+
+    async def _push_devices_changed(self, websocket, devices: list) -> None:
+        if websocket is None:
+            return
+        try:
+            # No "status" key, for the same reason device_lost carries none.
+            await websocket.send(json.dumps({
+                "type": "devices_changed",
+                "devices": devices,
+            }))
+        except Exception as e:
+            LOG.debug(f"devices_changed push failed: {e}")
 
     async def _push_device_lost(self, websocket, uri: str) -> None:
         if websocket is None:
@@ -1244,6 +1304,7 @@ class WebSocketServer:
         """Handle individual WebSocket client connections"""
         self.clients.add(websocket)
         self.handler._websocket = websocket
+        self.handler._start_bus_watch(websocket)
         LOG.info(f"Client connected. Total clients: {len(self.clients)}")
 
         try:
@@ -1286,8 +1347,9 @@ class WebSocketServer:
                 self.handler._cancel_flash = True
                 self.handler._flash_task.cancel()
                 self.handler._flash_task = None
-            # The watcher pushes to this socket, so it dies with the client
+            # The watchers push to this socket, so they die with the client
             self.handler._stop_device_watch()
+            self.handler._stop_bus_watch()
             self.clients.remove(websocket)
             LOG.info(f"Client disconnected. Total clients: {len(self.clients)}")
             # Release the probe session when the last client goes away so a
