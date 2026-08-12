@@ -1047,7 +1047,7 @@ class CommandHandler:
                 catalogue[name.lower()] = {
                     "name": name,
                     "vendor": target.vendor,
-                    "flash_size": boot.length,
+                    "flash_size": self._internal_flash_size(target.memory_map, boot),
                     "ram_size": max(rams, default=None),
                 }
             except Exception as e:
@@ -1060,55 +1060,109 @@ class CommandHandler:
     def _pick_memories(memories: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Pick the flash and RAM regions to show for a part.
 
-        Region *names* differ per vendor ('IROM1', 'Flash', 'External_Flash'),
-        so the access flags decide instead. Flash is the boot region rather than
-        the sum of every executable region: on parts that map external QSPI or a
-        second bank, a sum reports a size the chip does not have.
+        Region names differ per vendor, so flags decide. `startup` marks the
+        flash, not a read-only access mask: many vendors mark internal flash
+        writable, which had it counted as the part's RAM instead.
+
+        Every pick is fully ordered. Parts exist with two startup regions (the
+        aliases of one flash) and with equal-sized RAM banks, and the index hands
+        regions over in build order, so an unordered max is not reproducible.
         """
-        def largest(regions):
-            return max(regions, key=lambda r: r.get("size") or 0, default={})
+        def access_of(region):
+            return region.get("access") or {}
 
-        flash_candidates = []
-        ram_candidates = []
-        for region in memories.values():
-            access = region.get("access") or {}
-            if access.get("execute") and not access.get("write"):
-                flash_candidates.append(region)
-            elif access.get("write"):
-                ram_candidates.append(region)
+        def size_of(region):
+            return region.get("size") or 0
 
-        boot = next((r for r in flash_candidates if r.get("startup")), None)
-        default_ram = [r for r in ram_candidates if r.get("default")]
-        return (
-            boot or largest(flash_candidates),
-            largest(default_ram or ram_candidates),
+        def start_of(region):
+            return region.get("start") or 0
+
+        # Peripheral windows are writable and huge; they would outrank real RAM.
+        regions = [r for r in memories.values() if not access_of(r).get("peripheral")]
+
+        boot = sorted(
+            (r for r in regions if r.get("startup")),
+            # Aliases of one flash differ only in where they map; boot is lower.
+            key=lambda r: (not access_of(r).get("execute"), start_of(r)),
         )
+        rom = sorted(
+            (r for r in regions
+             if access_of(r).get("execute") and not access_of(r).get("write")),
+            key=lambda r: (-size_of(r), start_of(r)),
+        )
+        flash = (boot or rom or [{}])[0]
+
+        ram = sorted(
+            (r for r in regions
+             if access_of(r).get("write") and r is not flash and not r.get("startup")),
+            key=lambda r: (not r.get("default"), -size_of(r), start_of(r)),
+        )
+        return flash, (ram or [{}])[0]
 
     @staticmethod
-    def _core_of(entry: Dict[str, Any]) -> Optional[str]:
-        """The core name the index reports for a part, as written there."""
+    def _internal_flash_size(memory_map, boot) -> int:
+        """Size of the flash the boot region belongs to.
+
+        pyOCD splits one flash into several regions when its sectors differ in
+        size (LPC1768: 64K + 448K), so the boot region alone reported an eighth
+        of that part. Pieces of one flash share a name and take a numeric suffix;
+        requiring both the name and an adjacent address keeps out a separate
+        flash that merely begins where the boot one ends (Nuvoton's LDROM) and
+        external QSPI.
+        """
+        def is_piece_of_boot(region):
+            return region.name == boot.name or region.name.startswith(boot.name + '_')
+
+        flash = sorted(
+            (r for r in memory_map
+             if r.type.name == 'FLASH' and r.start >= boot.start and is_piece_of_boot(r)),
+            key=lambda r: r.start,
+        )
+        size = 0
+        expected = boot.start
+        for region in flash:
+            if region.start != expected:
+                break
+            size += region.length
+            expected = region.start + region.length
+        return size or boot.length
+
+    @staticmethod
+    def _is_m_profile(core: Optional[str]) -> bool:
+        c = (core or "").lower().replace("-", "").replace("_", "")
+        return c.startswith("cortexm") or c.startswith("armv8m")
+
+    @classmethod
+    def _core_of(cls, entry: Dict[str, Any]) -> Optional[str]:
+        """The core that decides this part's tier, named as the index writes it.
+
+        An M-profile core wins when the part has several: i.MX parts pair a
+        Cortex-A with a Cortex-M4 and always list the A first, and pyOCD can
+        attach to the M core, so reading only the first would call a reachable
+        part unsupported.
+        """
         processors = entry.get("processors")
-        if isinstance(processors, list) and processors:
-            return processors[0].get("core")
-        if isinstance(processors, dict) and processors:
-            return next(iter(processors.values())).get("core")
-        return None
+        if isinstance(processors, dict):
+            processors = list(processors.values())
+        if not isinstance(processors, list) or not processors:
+            return None
+        cores = [p.get("core") for p in processors]
+        return next((c for c in cores if cls._is_m_profile(c)), cores[0])
 
-    @staticmethod
-    def _support_tier(core: Optional[str], has_algorithm: bool) -> Optional[str]:
+    @classmethod
+    def _support_tier(cls, core: Optional[str], has_algorithm: bool) -> Optional[str]:
         """How far this part can be taken: 'flash', 'monitor' or 'none'.
 
         pyOCD drives M-profile cores over SWD, so an application-profile part
-        cannot even be attached to; an M-profile part with no flash algorithm in
-        its pack can be attached to but not programmed. Anything else returns
-        None: a core we have not classified is reported as unknown rather than
-        guessed, since a wrong 'none' hides a part the user owns.
+        cannot be attached to at all, and an M-profile part whose pack ships no
+        flash algorithm can be attached to but not programmed. An unclassified
+        core returns None: a wrong 'none' would hide a part the user owns.
         """
         if not core:
             return None
-        c = core.lower().replace("-", "").replace("_", "")
-        if c.startswith("cortexm") or c.startswith("armv8m"):
+        if cls._is_m_profile(core):
             return "flash" if has_algorithm else "monitor"
+        c = core.lower().replace("-", "").replace("_", "")
         if c.startswith("cortexa") or c.startswith("cortexr"):
             return "none"
         return None
@@ -1163,9 +1217,17 @@ class CommandHandler:
 
         matches.sort(key=rank)
 
+        # The pack row a built-in shadows, so the two sources can be compared.
+        index_by_key = {n.lower(): meta for n, meta in index.items()}
+
         results = []
         for key, name, payload, is_builtin in matches[:limit]:
             if is_builtin:
+                shadowed = index_by_key.get(key)
+                pack_flash = None
+                if shadowed:
+                    pack_region, _ = self._pick_memories(shadowed.get("memories") or {})
+                    pack_flash = pack_region.get("size")
                 results.append({
                     "name": name,
                     "vendor": payload["vendor"],
@@ -1179,6 +1241,15 @@ class CommandHandler:
                     "core": None,
                     # The catalogue only keeps targets with a boot memory.
                     "support": "flash",
+                    # pyOCD's geometry is the one that gets applied, but it and
+                    # the pack disagree on five parts and neither is right every
+                    # time (pyOCD gives STM32F103RC the RE's 512K; the pack gives
+                    # MAX32660 twice its flash), so both claims travel.
+                    "flash_size_alt": (
+                        pack_flash
+                        if pack_flash and pack_flash != payload["flash_size"]
+                        else None
+                    ),
                 })
                 continue
             flash_region, ram_region = self._pick_memories(payload.get("memories") or {})
@@ -1196,6 +1267,9 @@ class CommandHandler:
                 "installed": key in installed,
                 "core": core,
                 "support": self._support_tier(core, bool(payload.get("algorithms"))),
+                # Nothing shadows a pack row: a built-in of the same name
+                # replaced it in the match list.
+                "flash_size_alt": None,
             })
 
         # `total` counts every match, not the truncated page, so the client can
