@@ -1084,6 +1084,35 @@ class CommandHandler:
             largest(default_ram or ram_candidates),
         )
 
+    @staticmethod
+    def _core_of(entry: Dict[str, Any]) -> Optional[str]:
+        """The core name the index reports for a part, as written there."""
+        processors = entry.get("processors")
+        if isinstance(processors, list) and processors:
+            return processors[0].get("core")
+        if isinstance(processors, dict) and processors:
+            return next(iter(processors.values())).get("core")
+        return None
+
+    @staticmethod
+    def _support_tier(core: Optional[str], has_algorithm: bool) -> Optional[str]:
+        """How far this part can be taken: 'flash', 'monitor' or 'none'.
+
+        pyOCD drives M-profile cores over SWD, so an application-profile part
+        cannot even be attached to; an M-profile part with no flash algorithm in
+        its pack can be attached to but not programmed. Anything else returns
+        None: a core we have not classified is reported as unknown rather than
+        guessed, since a wrong 'none' hides a part the user owns.
+        """
+        if not core:
+            return None
+        c = core.lower().replace("-", "").replace("_", "")
+        if c.startswith("cortexm") or c.startswith("armv8m"):
+            return "flash" if has_algorithm else "monitor"
+        if c.startswith("cortexa") or c.startswith("cortexr"):
+            return "none"
+        return None
+
     def _handle_search_targets(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """Search the CMSIS-Pack index for targets matching a query string."""
         query = (cmd.get("query") or "").strip().lower()
@@ -1147,10 +1176,14 @@ class CommandHandler:
                     "pack_version": None,
                     "source": "builtin",
                     "installed": True,
+                    "core": None,
+                    # The catalogue only keeps targets with a boot memory.
+                    "support": "flash",
                 })
                 continue
             flash_region, ram_region = self._pick_memories(payload.get("memories") or {})
             from_pack = payload.get("from_pack") or {}
+            core = self._core_of(payload)
             results.append({
                 "name": name,
                 "vendor": (payload.get("vendor") or "").split(":")[0],
@@ -1161,6 +1194,8 @@ class CommandHandler:
                 "pack_version": from_pack.get("version"),
                 "source": "pack",
                 "installed": key in installed,
+                "core": core,
+                "support": self._support_tier(core, bool(payload.get("algorithms"))),
             })
 
         # `total` counts every match, not the truncated page, so the client can

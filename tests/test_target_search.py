@@ -19,14 +19,29 @@ def flash_and_ram(flash_size, ram_size):
     }
 
 
+def part(vendor, flash, ram, pack, core="CortexM3", algorithms=True):
+    return {
+        "vendor": vendor,
+        "memories": flash_and_ram(flash, ram),
+        "from_pack": {"vendor": "Keil", "pack": pack, "version": "2.4.1"},
+        "processors": [{"core": core}],
+        "algorithms": [{"file_name": "Flash/x.FLM", "default": True}] if algorithms else [],
+    }
+
+
 INDEX = {
-    "STM32F103C8": {"vendor": "STMicroelectronics:13", "memories": flash_and_ram(65536, 20480),
-                    "from_pack": {"vendor": "Keil", "pack": "STM32F1xx_DFP", "version": "2.4.1"}},
-    "STM32F103RC": {"vendor": "STMicroelectronics:13", "memories": flash_and_ram(262144, 49152),
-                    "from_pack": {"vendor": "Keil", "pack": "STM32F1xx_DFP", "version": "2.4.1"}},
+    "STM32F103C8": part("STMicroelectronics:13", 65536, 20480, "STM32F1xx_DFP"),
+    "STM32F103RC": part("STMicroelectronics:13", 262144, 49152, "STM32F1xx_DFP"),
     # Matches a query for "s" only as a substring, never as a prefix.
-    "ATSAMD21G18A": {"vendor": "Microchip:3", "memories": flash_and_ram(262144, 32768),
-                     "from_pack": {"vendor": "Keil", "pack": "SAMD21_DFP", "version": "1.3.0"}},
+    "ATSAMD21G18A": part("Microchip:3", 262144, 32768, "SAMD21_DFP", core="CortexM0Plus"),
+    # An application-profile part: pyOCD cannot attach to it at all.
+    "STM32MP157AAA": part("STMicroelectronics:13", 0, 262144, "STM32MP1xx_DFP",
+                          core="CortexA7", algorithms=False),
+    # M-profile, but its pack ships no flash algorithm.
+    "STM32H7A3ZI": part("STMicroelectronics:13", 2097152, 1048576, "STM32H7xx_DFP",
+                        core="CortexM7", algorithms=False),
+    # A core outside the classification, so its tier stays unknown.
+    "XL6600": part("ArmChina:1", 524288, 131072, "StarMC1_DFP", core="StarMC1"),
 }
 
 BUILTINS = {
@@ -94,13 +109,46 @@ def test_the_total_counts_matches_the_page_left_out(handler):
     resp = search(handler, "", limit=2)
 
     assert len(resp["results"]) == 2
-    assert resp["total"] == 3
+    assert resp["total"] == 6
 
 
 def test_every_part_reports_its_size(handler):
     row = search(handler, "stm32f103c8")["results"][0]
 
     assert (row["flash_size"], row["ram_size"]) == (65536, 20480)
+
+
+def test_an_application_profile_part_is_reported_unsupported(handler):
+    """SWD debug in pyOCD is M-profile only, so offering it would be a dead end."""
+    row = search(handler, "stm32mp157aaa")["results"][0]
+
+    assert (row["support"], row["core"]) == ("none", "CortexA7")
+
+
+def test_a_part_without_a_flash_algorithm_is_monitor_only(handler):
+    row = search(handler, "stm32h7a3zi")["results"][0]
+
+    assert row["support"] == "monitor"
+
+
+def test_a_part_with_a_flash_algorithm_can_be_flashed(handler):
+    row = search(handler, "stm32f103c8")["results"][0]
+
+    assert row["support"] == "flash"
+
+
+def test_a_builtin_target_can_be_flashed(handler):
+    row = search(handler, "stm32f103rc")["results"][0]
+
+    assert row["support"] == "flash"
+
+
+def test_an_unclassified_core_is_left_unknown(handler):
+    """A core we have not judged must not be reported as unsupported: a wrong
+    'none' would hide a part the user actually owns."""
+    row = search(handler, "xl6600")["results"][0]
+
+    assert row["support"] is None
 
 
 def test_a_target_that_cannot_be_programmed_is_not_offered():
