@@ -290,6 +290,15 @@ class CommandHandler:
 
     def _scan_devices(self) -> list:
         """Enumerate every probe family on the bus. Blocking (USB enumeration)."""
+        # A DummyProbe is the active probe only when someone asked for it — a
+        # mock run or fault injection — and scanning real hardware instead
+        # hides the very device that run is about.
+        if isinstance(self.probe, DummyProbe):
+            mocked = self.probe.list_devices()
+            self._device_probe_map = {d['device']: 'DummyProbe' for d in mocked}
+            self._known_devices = tuple(sorted(d['device'] for d in mocked))
+            return mocked
+
         all_devices = []
         probe_map: Dict[str, str] = {}
         pyocd_uids = set()
