@@ -1061,13 +1061,25 @@ class CommandHandler:
                 LOG.warning(f"Descriptor download failed: {e}")
 
         installed = self._get_installed_target_names()
-        results = []
+        matches = [(n, m) for n, m in index.items() if not query or query in n.lower()]
 
-        # Exact + substring match
-        for name, meta in index.items():
-            name_lower = name.lower()
-            if query and query not in name_lower:
-                continue
+        # Rank before cutting, or the limit decides what the user gets to see:
+        # an unfiltered search used to return whichever parts happened to come
+        # first in the index. The exact part number outranks everything, because
+        # picking a same-family neighbour means the wrong flash geometry.
+        def rank(item):
+            name_lower = item[0].lower()
+            return (
+                name_lower != query,
+                not name_lower.startswith(query),
+                name_lower not in installed,
+                name_lower,
+            )
+
+        matches.sort(key=rank)
+
+        results = []
+        for name, meta in matches[:limit]:
             flash_region, ram_region = self._pick_memories(meta.get("memories") or {})
             from_pack = meta.get("from_pack") or {}
             results.append({
@@ -1078,14 +1090,12 @@ class CommandHandler:
                 "pack": from_pack.get("pack"),
                 "pack_vendor": from_pack.get("vendor"),
                 "pack_version": from_pack.get("version"),
-                "installed": name_lower in installed,
+                "installed": name.lower() in installed,
             })
-            if len(results) >= limit:
-                break
 
-        # Sort: installed first, then alphabetical
-        results.sort(key=lambda r: (not r["installed"], r["name"].lower()))
-        return self._create_success_response({"results": results, "total": len(results)})
+        # `total` counts every match, not the truncated page, so the client can
+        # say how much it is not showing.
+        return self._create_success_response({"results": results, "total": len(matches)})
 
     async def _handle_install_pack(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """Download and install the CMSIS pack containing a given target."""
