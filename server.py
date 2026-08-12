@@ -70,6 +70,7 @@ class ErrorCode:
     FLASH_CANCELLED = "FLASH_CANCELLED"
     FLASH_NO_BOOT_MEMORY = "FLASH_NO_BOOT_MEMORY"
     FLASH_PROGRAM_FAILED = "FLASH_PROGRAM_FAILED"
+    FLASH_IMAGE_DOES_NOT_FIT = "FLASH_IMAGE_DOES_NOT_FIT"
     BROWSE_PERMISSION_DENIED = "BROWSE_PERMISSION_DENIED"
     BROWSE_INVALID_PATH = "BROWSE_INVALID_PATH"
 
@@ -723,6 +724,54 @@ class CommandHandler:
         )
         return self._create_success_response({"msg": "flash_started"})
 
+    @staticmethod
+    def _image_ranges(file_path: str, boot_start: int) -> list:
+        """Address ranges an image would write, read the way pyOCD reads them.
+
+        A file's size is not what gets programmed: an ELF carries symbols and
+        debug sections, and a hex file is sparse. These are the same parsers and
+        the same fields FileProgrammer uses, so the ranges match byte for byte.
+        """
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext == '.bin':
+            return [(boot_start, os.path.getsize(file_path))]
+        if ext == '.hex':
+            from intelhex import IntelHex
+            from pyocd.flash.file_programmer import ranges
+            hexfile = IntelHex(file_path)
+            addresses = sorted(hexfile.addresses())
+            return [(start, end - start + 1) for start, end in ranges(addresses)]
+        from elftools.elf.elffile import ELFFile
+        with open(file_path, 'rb') as f:
+            elf = ELFFile(f)
+            return [
+                (seg['p_paddr'], seg.header.p_filesz)
+                for seg in elf.iter_segments()
+                if seg.header.p_type == 'PT_LOAD' and seg.header.p_filesz != 0
+            ]
+
+    def _check_image_fits(self, memory_map, core_name, image) -> None:
+        """Refuse an image whose bytes have nowhere to go on this target.
+
+        pyOCD only raises for a binary; for hex and ELF it logs a warning and
+        drops the chunk, so an image built for a larger part would report a
+        successful flash with everything past the end of flash missing.
+        """
+        for address, length in image:
+            remaining, addr = length, address
+            while remaining > 0:
+                region = memory_map.get_region_for_address(addr, core_name)
+                if region is None or not (region.is_flash or region.is_writable):
+                    raise ProbeError(
+                        f"The image writes {length} bytes at 0x{address:08X}, but this "
+                        f"target has no programmable memory at 0x{addr:08X}. It was "
+                        f"probably built for a larger variant of the part.",
+                        ErrorCode.FLASH_IMAGE_DOES_NOT_FIT,
+                    )
+                covered = min(remaining, region.end - addr + 1)
+                remaining -= covered
+                addr += covered
+
     async def _run_flash(self, websocket, file_path, chip_erase,
                          verify, no_reset, flash_id):
         """Background flash task. Delegates to mock or PyOCD implementation."""
@@ -766,6 +815,7 @@ class CommandHandler:
         success = False
         error_code = None
         error_msg = None
+        image = None
         try:
             # Pre-flight: ensure target has a usable memory map
             memory_map = getattr(self.probe.target, 'memory_map', None)
@@ -776,10 +826,21 @@ class CommandHandler:
                 except Exception:
                     boot_region = None
             if boot_region is None:
-                raise RuntimeError(
-                    "No boot memory is defined for this device. "
-                    "PyOCD likely auto-detected a generic Cortex-M without a CMSIS memory map. "
-                    "Restart the SDK with an explicit --target (e.g. --target stm32g474retx)."
+                raise ProbeError(
+                    "No boot memory is defined for this device: the part was "
+                    "auto-detected as a generic Cortex-M, which has no flash map. "
+                    "Choose the exact chip on the board and try again.",
+                    ErrorCode.FLASH_NO_BOOT_MEMORY,
+                )
+
+            try:
+                image = self._image_ranges(file_path, boot_region.start)
+            except Exception as e:
+                LOG.warning(f"Could not read the image's address ranges: {e}")
+                image = None
+            if image is not None:
+                self._check_image_fits(
+                    memory_map, self.probe.target.selected_core.node_name, image
                 )
 
             LOG.info(
@@ -845,6 +906,13 @@ class CommandHandler:
             error_code = ErrorCode.FLASH_CANCELLED
             error_msg = "Flash cancelled"
             LOG.info("Flash task cancelled")
+        except ProbeError as e:
+            # Our own pre-flight refusals already know their code; the guesswork
+            # below is for whatever pyOCD raises.
+            success = False
+            error_code = e.error_code
+            error_msg = str(e)
+            LOG.error(f"Flash refused: {e}")
         except Exception as e:
             success = False
             msg = str(e)
@@ -877,10 +945,15 @@ class CommandHandler:
         try:
             if success:
                 elapsed_ms = round((loop.time() - start_time) * 1000)
-                try:
-                    bytes_programmed = os.path.getsize(file_path)
-                except OSError:
-                    bytes_programmed = 0
+                # The file's size is not what was written: an ELF carries symbols
+                # and debug sections, a hex file is sparse.
+                if image is not None:
+                    bytes_programmed = sum(length for _, length in image)
+                else:
+                    try:
+                        bytes_programmed = os.path.getsize(file_path)
+                    except OSError:
+                        bytes_programmed = 0
                 await websocket.send(json.dumps({
                     "type": "flash_complete",
                     "flash_id": flash_id,
