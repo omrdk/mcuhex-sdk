@@ -113,6 +113,7 @@ class CommandHandler:
         # Per-device target overrides (device_uri -> pyocd target name)
         self._target_overrides: Dict[str, str] = {}
         self._pack_cache = None  # lazy-loaded cmsis_pack_manager.Cache
+        self._builtin_target_cache: Optional[Dict[str, Dict[str, Any]]] = None
         self._setup_command_handlers()
 
     def _setup_command_handlers(self):
@@ -1013,6 +1014,48 @@ class CommandHandler:
             LOG.debug(f"Could not enumerate installed packs: {e}")
             return set()
 
+    def _builtin_targets(self) -> Dict[str, Dict[str, Any]]:
+        """pyOCD's own targets, keyed by lowercased name. Built once per process.
+
+        These need no pack download, so they are the shortest path to a
+        flashable target. Targets without a boot memory are left out: they
+        cannot be programmed, and offering them as flash targets is a trap.
+        """
+        if self._builtin_target_cache is not None:
+            return self._builtin_target_cache
+
+        catalogue: Dict[str, Dict[str, Any]] = {}
+        try:
+            from pyocd.core.session import Session
+            from pyocd.tools.lists import StubProbe
+            from pyocd.target import TARGET
+        except Exception as e:
+            LOG.debug(f"Built-in target catalogue unavailable: {e}")
+            self._builtin_target_cache = catalogue
+            return catalogue
+
+        for name, cls in TARGET.items():
+            try:
+                # Same trick `pyocd list --targets` uses: a stub probe is enough
+                # to instantiate a target and read its memory map without any
+                # hardware attached.
+                target = cls(Session(StubProbe(), no_config=True, target_override='cortex_m'))
+                boot = target.memory_map.get_boot_memory()
+                if boot is None:
+                    continue
+                rams = [r.length for r in target.memory_map if r.type.name == 'RAM']
+                catalogue[name.lower()] = {
+                    "name": name,
+                    "vendor": target.vendor,
+                    "flash_size": boot.length,
+                    "ram_size": max(rams, default=None),
+                }
+            except Exception as e:
+                LOG.debug(f"Built-in target {name} skipped: {e}")
+
+        self._builtin_target_cache = catalogue
+        return catalogue
+
     @staticmethod
     def _pick_memories(memories: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Pick the flash and RAM regions to show for a part.
@@ -1061,36 +1104,63 @@ class CommandHandler:
                 LOG.warning(f"Descriptor download failed: {e}")
 
         installed = self._get_installed_target_names()
-        matches = [(n, m) for n, m in index.items() if not query or query in n.lower()]
+        builtins = self._builtin_targets()
 
-        # Rank before cutting, or the limit decides what the user gets to see:
-        # an unfiltered search used to return whichever parts happened to come
-        # first in the index. The exact part number outranks everything, because
-        # picking a same-family neighbour means the wrong flash geometry.
+        # A name pyOCD ships wins over the pack of the same name: installing that
+        # pack leaves TARGET pointing at the built-in class, so the pack's
+        # geometry would describe something that never gets applied.
+        matches = [
+            (n.lower(), n, meta, False) for n, meta in index.items()
+            if (not query or query in n.lower()) and n.lower() not in builtins
+        ]
+        matches += [
+            (key, entry["name"], entry, True) for key, entry in builtins.items()
+            if not query or query in key
+        ]
+
+        # Rank before cutting, or the limit decides what the user gets to see: an
+        # unfiltered search used to return whichever parts came first in the
+        # index. The exact part number outranks everything, because picking a
+        # same-family neighbour means the wrong flash geometry. Ranking on names
+        # alone keeps the row building to one page.
         def rank(item):
-            name_lower = item[0].lower()
+            key, _, _, is_builtin = item
             return (
-                name_lower != query,
-                not name_lower.startswith(query),
-                name_lower not in installed,
-                name_lower,
+                key != query,
+                not key.startswith(query),
+                not (is_builtin or key in installed),
+                key,
             )
 
         matches.sort(key=rank)
 
         results = []
-        for name, meta in matches[:limit]:
-            flash_region, ram_region = self._pick_memories(meta.get("memories") or {})
-            from_pack = meta.get("from_pack") or {}
+        for key, name, payload, is_builtin in matches[:limit]:
+            if is_builtin:
+                results.append({
+                    "name": name,
+                    "vendor": payload["vendor"],
+                    "flash_size": payload["flash_size"],
+                    "ram_size": payload["ram_size"],
+                    "pack": None,
+                    "pack_vendor": None,
+                    "pack_version": None,
+                    "source": "builtin",
+                    "installed": True,
+                })
+                continue
+            flash_region, ram_region = self._pick_memories(payload.get("memories") or {})
+            from_pack = payload.get("from_pack") or {}
             results.append({
                 "name": name,
-                "vendor": (meta.get("vendor") or "").split(":")[0],
+                "vendor": (payload.get("vendor") or "").split(":")[0],
                 "flash_size": flash_region.get("size"),
                 "ram_size": ram_region.get("size"),
                 "pack": from_pack.get("pack"),
                 "pack_vendor": from_pack.get("vendor"),
                 "pack_version": from_pack.get("version"),
-                "installed": name.lower() in installed,
+                "source": "pack",
+                "installed": key in installed,
             })
 
         # `total` counts every match, not the truncated page, so the client can
