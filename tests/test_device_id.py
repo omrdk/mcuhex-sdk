@@ -6,17 +6,22 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from probe.device_id import STM32F1, identify
+from probe.device_id import ST_DEVICES, UID_BY_FAMILY, identify
+
+F1_IDCODE = 0xE0042000
+F0_IDCODE = 0x40015800
+H7_IDCODE = 0x5C001000
 
 # Measured on an STM32F103 over an ST-Link: DEV_ID 0x410, REV_ID 0, and bits
 # RM0008 leaves reserved coming back set.
-F103_IDCODE = 0x6410
+F103_IDCODE_VALUE = 0x6410
 F103_FLASH_KB = 128
 F103_UID_WORDS = (0x01990230, 0x52310010, 0x3638414B)
 
 
 class FakeCore:
-    name = "Cortex-M3"
+    def __init__(self, name="Cortex-M3"):
+        self.name = name
 
 
 class FakeComponentID:
@@ -38,10 +43,11 @@ class FakeDP:
 class FakeTarget:
     """A target whose memory answers only at the addresses given to it."""
 
-    def __init__(self, memory, core=FakeCore(), aps=None):
+    def __init__(self, memory, core=None, aps=None):
         self._memory = memory
-        self.selected_core = core
+        self.selected_core = FakeCore() if core is None else core
         self.dp = FakeDP(aps if aps is not None else {})
+        self.reads = []
 
     def read32(self, address):
         return self._at(address, 4)
@@ -50,6 +56,7 @@ class FakeTarget:
         return self._at(address, 2)
 
     def _at(self, address, width):
+        self.reads.append(address)
         if address not in self._memory:
             raise RuntimeError(f"transfer fault at {address:#010x}")
         return self._memory[address] & ((1 << (width * 8)) - 1)
@@ -57,11 +64,11 @@ class FakeTarget:
 
 def f103_memory(flash_kb=F103_FLASH_KB):
     memory = {
-        STM32F1["idcode"]: F103_IDCODE,
-        STM32F1["flash_size"]: flash_kb,
+        F1_IDCODE: F103_IDCODE_VALUE,
+        ST_DEVICES[0x410][1]: flash_kb,
     }
     for index, word in enumerate(F103_UID_WORDS):
-        memory[STM32F1["uid"] + index * 4] = word
+        memory[UID_BY_FAMILY['STM32F1'] + index * 4] = word
     return memory
 
 
@@ -79,9 +86,20 @@ def test_the_core_comes_from_what_pyocd_already_read():
 
 
 def test_a_core_pyocd_could_not_name_is_left_unknown():
-    core = type("UnnamedCore", (), {"name": "Unknown (CPUID=0x411fc231)"})()
+    core = FakeCore("Unknown (CPUID=0x411fc231)")
 
     assert identify(FakeTarget(f103_memory(), core=core))["core"] is None
+
+
+def test_an_unnamed_core_is_not_interrogated_at_all():
+    """Without a core there is no telling which address holds the device ID, and
+    on a part from elsewhere it holds whatever that vendor put there."""
+    target = FakeTarget(f103_memory(), core=FakeCore("Unknown (CPUID=0x0)"))
+
+    detected = identify(target)
+
+    assert detected["family"] is None
+    assert target.reads == []
 
 
 def test_the_unique_id_reads_most_significant_word_first():
@@ -89,7 +107,6 @@ def test_the_unique_id_reads_most_significant_word_first():
 
 
 def test_a_part_that_does_not_answer_is_left_unknown():
-    """Every identity address faults, as it would on a part from elsewhere."""
     detected = identify(FakeTarget({}))
 
     assert detected["family"] is None
@@ -97,17 +114,54 @@ def test_a_part_that_does_not_answer_is_left_unknown():
     assert detected["flash_size"] is None
 
 
-def test_a_device_id_outside_the_family_is_not_believed():
-    """0x440 is an STM32F0, whose DBGMCU is not at this address at all."""
+def test_a_device_id_outside_the_table_is_not_believed():
     memory = f103_memory()
-    memory[STM32F1["idcode"]] = 0x10010440
+    memory[F1_IDCODE] = 0x10010999
 
     assert identify(FakeTarget(memory))["family"] is None
 
 
+def test_a_cortex_m0_is_asked_at_the_address_its_family_uses():
+    """An STM32F03x: same core family, different DBGMCU address."""
+    memory = {F0_IDCODE: 0x10010444, ST_DEVICES[0x444][1]: 32}
+
+    detected = identify(FakeTarget(memory, core=FakeCore("Cortex-M0+")))
+
+    assert detected["family"] == "STM32F0"
+    assert detected["flash_size"] == 32 * 1024
+
+
+def test_a_cortex_m0_is_not_asked_at_the_cortex_m3_address():
+    target = FakeTarget(f103_memory(), core=FakeCore("Cortex-M0"))
+
+    assert identify(target)["family"] is None
+    assert F1_IDCODE not in target.reads
+
+
+def test_a_core_shared_by_two_families_tries_both_addresses():
+    """F7 and H7 are both Cortex-M7 and disagree on where IDCODE lives."""
+    memory = {H7_IDCODE: 0x10010450, ST_DEVICES[0x450][1]: 2048}
+
+    detected = identify(FakeTarget(memory, core=FakeCore("Cortex-M7")))
+
+    assert detected["family"] == "STM32H7"
+    assert detected["flash_size"] == 2048 * 1024
+
+
+def test_a_family_whose_size_register_is_not_read_still_identifies():
+    """The H5 register sits in system flash, which a running firmware can leave
+    unreadable, so no size is claimed for it."""
+    memory = {0xE0044000: 0x10010484}
+
+    detected = identify(FakeTarget(memory, core=FakeCore("Cortex-M33")))
+
+    assert detected["family"] == "STM32H5"
+    assert detected["flash_size"] is None
+
+
 def test_an_implausible_flash_size_is_dropped_but_the_family_stays():
     memory = f103_memory()
-    memory[STM32F1["flash_size"]] = 0xFFFF
+    memory[ST_DEVICES[0x410][1]] = 0xFFFF
 
     detected = identify(FakeTarget(memory))
 
@@ -116,19 +170,23 @@ def test_an_implausible_flash_size_is_dropped_but_the_family_stays():
 
 
 def test_a_flash_size_register_reading_zero_is_dropped():
-    memory = f103_memory(flash_kb=0)
-
-    assert identify(FakeTarget(memory))["flash_size"] is None
+    assert identify(FakeTarget(f103_memory(flash_kb=0)))["flash_size"] is None
 
 
-def test_an_unreadable_unique_id_does_not_take_the_family_down():
+def test_an_unreadable_flash_size_does_not_take_the_family_down():
     memory = f103_memory()
-    del memory[STM32F1["uid"] + 8]
+    del memory[ST_DEVICES[0x410][1]]
 
     detected = identify(FakeTarget(memory))
 
     assert detected["family"] == "STM32F1"
-    assert detected["uid"] is None
+    assert detected["flash_size"] is None
+
+
+def test_a_family_with_no_confirmed_unique_id_address_reports_none():
+    memory = {F0_IDCODE: 0x10010444, ST_DEVICES[0x444][1]: 32}
+
+    assert identify(FakeTarget(memory, core=FakeCore("Cortex-M0+")))["uid"] is None
 
 
 def test_an_arm_rom_table_is_not_reported_as_a_designer():
@@ -145,8 +203,9 @@ def test_a_vendor_rom_table_is_reported():
     assert identify(FakeTarget(f103_memory(), aps=aps))["designer"] == "ST"
 
 
-def test_a_target_with_no_cores_yet_still_answers():
-    detected = identify(FakeTarget(f103_memory(), core=None))
-
-    assert detected["core"] is None
-    assert detected["family"] == "STM32F1"
+def test_every_family_label_is_usable_as_a_search_query():
+    """The label is handed to the chip search as its opening query, so a stray
+    one would leave the user staring at an empty list."""
+    for dev_id, (family, _) in ST_DEVICES.items():
+        assert family.startswith('STM32'), f"{dev_id:#05x}: {family!r}"
+        assert family.isalnum(), f"{dev_id:#05x}: {family!r}"
