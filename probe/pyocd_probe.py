@@ -5,6 +5,7 @@ from pyocd.core.session import Session
 from pyocd.core.soc_target import SoCTarget
 
 from .debugprobe import DebugProbe
+from .device_id import identify
 from typing import Optional
 
 LOG = logging.getLogger("pyocd-probe")
@@ -84,6 +85,7 @@ class PyOCDProbe(DebugProbe):
             "part_number": getattr(self.target, 'part_number', None),
             "probe_name": getattr(self.session.probe, 'product_name', None),
             "can_program": self._has_boot_memory(),
+            "detected": identify(self.target),
         }
 
     def _has_boot_memory(self) -> bool:

@@ -58,3 +58,12 @@ def test_an_unreadable_map_is_not_reported_as_flashable():
 
 def test_no_session_reports_no_target_at_all():
     assert PyOCDProbe().get_target_info() is None
+
+
+def test_a_target_that_answers_nothing_still_reports_a_detection_shape():
+    """Callers read the fields directly, so the keys have to be there even when
+    the target cannot be interrogated at all."""
+    detected = probe_with(FakeMemoryMap(boot=object())).get_target_info()["detected"]
+
+    assert detected["family"] is None
+    assert detected["core"] is None
