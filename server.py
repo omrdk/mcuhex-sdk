@@ -71,6 +71,7 @@ class ErrorCode:
     FLASH_NO_BOOT_MEMORY = "FLASH_NO_BOOT_MEMORY"
     FLASH_PROGRAM_FAILED = "FLASH_PROGRAM_FAILED"
     FLASH_IMAGE_DOES_NOT_FIT = "FLASH_IMAGE_DOES_NOT_FIT"
+    FLASH_TARGET_MISMATCH = "FLASH_TARGET_MISMATCH"
     BROWSE_PERMISSION_DENIED = "BROWSE_PERMISSION_DENIED"
     BROWSE_INVALID_PATH = "BROWSE_INVALID_PATH"
 
@@ -750,6 +751,42 @@ class CommandHandler:
                 if seg.header.p_type == 'PT_LOAD' and seg.header.p_filesz != 0
             ]
 
+    def _check_target_matches_chip(self, memory_map) -> None:
+        """Refuse a target that claims more flash than the chip reports having.
+
+        The fit check cannot catch a mispicked variant: a target for a larger
+        part declares room the attached chip does not have, so a small image
+        fits on paper and the erase runs with the wrong geometry. Only the chip
+        speaks for itself here.
+
+        The opposite direction is left alone deliberately. A target claiming
+        less is conservative, and refusing on family names instead would fire
+        on the F1 clones that report the same device ID as the part they copy.
+        """
+        detected = (self.probe.get_target_info() or {}).get("detected") or {}
+        reported = detected.get("flash_size")
+        if not reported:
+            return
+
+        from pyocd.core.memory_map import MemoryType
+        claimed = sum(
+            region.length
+            for region in memory_map.iter_matching_regions(type=MemoryType.FLASH)
+            if region.alias is None
+        )
+        if claimed <= reported:
+            return
+
+        raise ProbeError(
+            f"The chip reports {reported // 1024} KB of flash, but the target "
+            f"chosen for it declares {claimed // 1024} KB"
+            + (f" ({detected['family']}, device ID 0x{detected['dev_id']:03X})"
+               if detected.get("dev_id") else "")
+            + ". Erasing with the wrong geometry cannot be undone, so nothing "
+            "was written.",
+            ErrorCode.FLASH_TARGET_MISMATCH,
+        )
+
     def _check_image_fits(self, memory_map, core_name, image) -> None:
         """Refuse an image whose bytes have nowhere to go on this target.
 
@@ -832,6 +869,8 @@ class CommandHandler:
                     "Choose the exact chip on the board and try again.",
                     ErrorCode.FLASH_NO_BOOT_MEMORY,
                 )
+
+            self._check_target_matches_chip(memory_map)
 
             try:
                 image = self._image_ranges(file_path, boot_region.start)
