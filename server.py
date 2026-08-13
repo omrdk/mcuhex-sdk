@@ -13,6 +13,7 @@ from probe.debugprobe import DebugProbe
 from probe.dummyprobe import DummyProbe
 from probe.pyocd_probe import PyOCDProbe
 from probe.errors import ProbeError
+from probe.error_map import classify
 
 # OCD/serial drivers (STM32G4, ESP32-C3, TI C2000) are kept out-of-tree for
 # future work; import gracefully so the server still runs when they are absent.
@@ -49,10 +50,15 @@ class ErrorCode:
     PERMISSION_DENIED = "PERMISSION_DENIED"
     CONNECT_TIMEOUT = "CONNECT_TIMEOUT"
     PROBE_MISMATCH = "PROBE_DRIVER_MISMATCH"
+    PROBE_FIRMWARE_TOO_OLD = "PROBE_FIRMWARE_TOO_OLD"
+    PROBE_ALREADY_OPEN = "PROBE_ALREADY_OPEN"
     READ_WRITE_FAILED = "READ_WRITE_FAILED"
     UNKNOWN = "UNKNOWN_CONNECTION_ERROR"
 
     # Cortex-M family (SWD/CMSIS-DAP debug architecture)
+    CORTEX_M_NO_TARGET_RESPONSE = "CORTEX_M_NO_TARGET_RESPONSE"
+    CORTEX_M_NO_CORE_FOUND = "CORTEX_M_NO_CORE_FOUND"
+    CORTEX_M_DEBUG_POWER_FAILED = "CORTEX_M_DEBUG_POWER_FAILED"
     CORTEX_M_DEBUG_PORT_LOCKED = "CORTEX_M_DEBUG_PORT_LOCKED"
     CORTEX_M_SWD_PROTOCOL_ERROR = "CORTEX_M_SWD_PROTOCOL_ERROR"
     CORTEX_M_TARGET_IN_RESET = "CORTEX_M_TARGET_IN_RESET"
@@ -63,6 +69,7 @@ class ErrorCode:
 
     # Flash operations
     FLASH_FILE_NOT_FOUND = "FLASH_FILE_NOT_FOUND"
+    FLASH_ERASE_FAILED = "FLASH_ERASE_FAILED"
     FLASH_UNSUPPORTED_FORMAT = "FLASH_UNSUPPORTED_FORMAT"
     FLASH_VERIFICATION_FAILED = "FLASH_VERIFICATION_FAILED"
     FLASH_ALREADY_RUNNING = "FLASH_ALREADY_RUNNING"
@@ -182,26 +189,12 @@ class CommandHandler:
             response["status"] = 0
             return response
             
-        except PermissionError as e:
-            LOG.error(f"Permission error in '{command_name}': {e}")
-            return self._create_error_response(str(e), error_code=ErrorCode.PERMISSION_DENIED)
-        except TimeoutError as e:
-            LOG.error(f"Timeout in '{command_name}': {e}")
-            return self._create_error_response(str(e), error_code=ErrorCode.CONNECT_TIMEOUT)
         except ProbeError as e:
             LOG.error(f"Probe error in '{command_name}': {e}")
             return self._create_error_response(str(e), error_code=e.error_code)
         except Exception as e:
             LOG.error(f"Error executing command '{command_name}': {e}")
-            error_code = ErrorCode.UNKNOWN
-            msg = str(e).lower()
-            if 'busy' in msg or 'in use' in msg:
-                error_code = ErrorCode.DEVICE_BUSY
-            elif 'transfer' in msg or 'fault' in msg or 'memory' in msg:
-                error_code = ErrorCode.READ_WRITE_FAILED
-            elif 'no probe' in msg or 'no debug' in msg:
-                error_code = ErrorCode.NO_DEVICES
-            return self._create_error_response(str(e), error_code=error_code)
+            return self._create_error_response(str(e), error_code=classify(e, command_name))
 
     def _create_error_response(self, msg: str, status: int = 1, error_code: str = None) -> Dict[str, Any]:
         """Create standardized error response"""
@@ -946,31 +939,14 @@ class CommandHandler:
             error_msg = "Flash cancelled"
             LOG.info("Flash task cancelled")
         except ProbeError as e:
-            # Our own pre-flight refusals already know their code; the guesswork
-            # below is for whatever pyOCD raises.
             success = False
             error_code = e.error_code
             error_msg = str(e)
             LOG.error(f"Flash refused: {e}")
         except Exception as e:
             success = False
-            msg = str(e)
-            msg_lower = msg.lower()
-            if 'write protected' in msg_lower or 'flash protected' in msg_lower:
-                error_code = ErrorCode.CORTEX_M_FLASH_WRITE_PROTECTED
-            elif 'page failure' in msg_lower or 'pgserr' in msg_lower or 'result code' in msg_lower:
-                error_code = ErrorCode.FLASH_PROGRAM_FAILED
-            elif 'no boot memory' in msg_lower or 'no flash' in msg_lower or 'no memory region' in msg_lower:
-                error_code = ErrorCode.FLASH_NO_BOOT_MEMORY
-            elif 'no such file' in msg_lower or 'not found' in msg_lower:
-                error_code = ErrorCode.FLASH_FILE_NOT_FOUND
-            elif 'verification' in msg_lower or 'verify' in msg_lower:
-                error_code = ErrorCode.FLASH_VERIFICATION_FAILED
-            elif 'unsupported' in msg_lower and ('format' in msg_lower or 'file' in msg_lower):
-                error_code = ErrorCode.FLASH_UNSUPPORTED_FORMAT
-            else:
-                error_code = ErrorCode.UNKNOWN
-            error_msg = msg
+            error_code = classify(e, "flash", getattr(self.probe, 'target', None))
+            error_msg = str(e)
             LOG.error(f"Flash failed: {e}")
 
             # Try to resume the target so it's not left halted after a failure

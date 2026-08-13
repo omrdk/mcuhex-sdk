@@ -142,7 +142,9 @@ def _from_type(exc: BaseException, operation: str) -> str:
         return "FLASH_PROGRAM_FAILED"
     if isinstance(exc, exceptions.TargetSupportError):
         return "CORTEX_M_UNSUPPORTED_TARGET"
-    if isinstance(exc, (exceptions.TransferTimeoutError, exceptions.TimeoutError)):
+    # pyOCD's TimeoutError is its own class, unrelated to the builtin one that
+    # asyncio and the socket layer raise. Both mean the same thing here.
+    if isinstance(exc, (exceptions.TransferTimeoutError, exceptions.TimeoutError, TimeoutError)):
         return "CONNECT_TIMEOUT"
     if isinstance(exc, exceptions.TransferFaultError):
         return "CORTEX_M_DEBUG_PORT_LOCKED" if operation == "connect" else "READ_WRITE_FAILED"

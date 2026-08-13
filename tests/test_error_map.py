@@ -129,6 +129,12 @@ def test_a_refused_open_comes_from_the_operating_system_too():
     assert classify(PermissionError(13, "Permission denied"), "connect") == "PERMISSION_DENIED"
 
 
+def test_both_timeout_classes_mean_the_same_thing():
+    """pyOCD defines its own TimeoutError; asyncio raises the builtin one."""
+    assert classify(exceptions.TimeoutError("probe"), "connect") == "CONNECT_TIMEOUT"
+    assert classify(TimeoutError("waiting for the handler"), "connect") == "CONNECT_TIMEOUT"
+
+
 def test_a_part_pyocd_has_no_support_for_says_so_by_type():
     assert classify(exceptions.TargetSupportError("no target named 'stm32f9'"), "connect") == \
         "CORTEX_M_UNSUPPORTED_TARGET"
