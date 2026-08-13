@@ -33,6 +33,8 @@ import sys
 import os
 import argparse
 
+from probe.dummyprobe import DummyProbe
+
 # Map friendly driver names to server probe classes.
 # Only SWD (ARM Cortex-M) is supported today; OCD (STM32G4) and serial
 # (TI C2000 / Espressif) drivers are kept out-of-tree for future work.
@@ -41,25 +43,9 @@ DRIVER_MAP = {
     "pyocd": "PyOCDProbe",
 }
 
-# Valid scenario names (must match ConnectionErrorCode values in web client)
-SCENARIO_NAMES = [
-    # Generic connection errors
-    "NO_DEVICES_FOUND",
-    "DEVICE_BUSY",
-    "PERMISSION_DENIED",
-    "CONNECT_TIMEOUT",
-    "PROBE_DRIVER_MISMATCH",
-    "READ_WRITE_FAILED",
-    "SDK_CONNECTION_LOST",
-    # Cortex-M family
-    "CORTEX_M_DEBUG_PORT_LOCKED",
-    "CORTEX_M_SWD_PROTOCOL_ERROR",
-    "CORTEX_M_TARGET_IN_RESET",
-    "CORTEX_M_TARGET_NOT_HALTED",
-    "CORTEX_M_FLASH_WRITE_PROTECTED",
-    "CORTEX_M_UNSUPPORTED_TARGET",
-    "CORTEX_M_HARDFAULT_DETECTED",
-]
+# Valid scenario names. DummyProbe owns the list; SDK_CONNECTION_LOST is the one
+# scenario the probe cannot stage, since it drops the WebSocket itself.
+SCENARIO_NAMES = sorted(DummyProbe.SCENARIOS) + ["SDK_CONNECTION_LOST"]
 
 
 def main():

@@ -23,17 +23,33 @@ class DummyProbe(DebugProbe):
         "PERMISSION_DENIED":         ("connect", "PERMISSION_DENIED", "USB device access denied: insufficient permissions"),
         "CONNECT_TIMEOUT":           ("connect", "CONNECT_TIMEOUT", "Debug probe did not respond within 3000ms"),
         "PROBE_DRIVER_MISMATCH":     ("connect", "PROBE_DRIVER_MISMATCH", "Probe driver does not match connected hardware"),
+        "PROBE_ALREADY_OPEN":        ("connect", "PROBE_ALREADY_OPEN", "STLink error (14): Already opened in another mode"),
+        "PROBE_FIRMWARE_TOO_OLD":    ("connect", "PROBE_FIRMWARE_TOO_OLD", "STLink 066BFF is using an unsupported, older firmware version. Please update it."),
         "READ_WRITE_FAILED":         ("read", "READ_WRITE_FAILED", "Memory transfer fault at address 0x{addr:08X}"),
         # Cortex-M family
+        "CORTEX_M_NO_TARGET_RESPONSE":   ("connect", "CORTEX_M_NO_TARGET_RESPONSE", "STLink error (5): No device connected"),
+        "CORTEX_M_NO_CORE_FOUND":        ("connect", "CORTEX_M_NO_CORE_FOUND", "No cores were discovered!"),
+        "CORTEX_M_DEBUG_POWER_FAILED":   ("connect", "CORTEX_M_DEBUG_POWER_FAILED", "STLink error (11): Debug power error"),
         "CORTEX_M_DEBUG_PORT_LOCKED":    ("connect", "CORTEX_M_DEBUG_PORT_LOCKED", "Debug port is locked (RDP/APPROTECT active)"),
         "CORTEX_M_SWD_PROTOCOL_ERROR":   ("connect", "CORTEX_M_SWD_PROTOCOL_ERROR", "SWD protocol error: no ACK from target"),
         "CORTEX_M_TARGET_IN_RESET":      ("connect", "CORTEX_M_TARGET_IN_RESET", "Target is held in reset (check NRST pin)"),
         "CORTEX_M_UNSUPPORTED_TARGET":   ("connect", "CORTEX_M_UNSUPPORTED_TARGET", "Unknown target: IDCODE 0x00000000 not recognized"),
         "CORTEX_M_TARGET_NOT_HALTED":    ("read", "CORTEX_M_TARGET_NOT_HALTED", "Target is running, cannot access memory"),
-        "CORTEX_M_FLASH_WRITE_PROTECTED": ("write", "CORTEX_M_FLASH_WRITE_PROTECTED", "Flash write protected: region is locked"),
         "CORTEX_M_HARDFAULT_DETECTED":   ("read", "CORTEX_M_HARDFAULT_DETECTED", "Target entered HardFault (CFSR=0x00000001)"),
+        # Flash operations. A "flash" trigger is never raised from a probe
+        # method — the flash task looks the scenario up and reports it instead.
+        "FLASH_ERASE_FAILED":            ("flash", "FLASH_ERASE_FAILED", "flash erase sector failure"),
+        "CORTEX_M_FLASH_WRITE_PROTECTED": ("flash", "CORTEX_M_FLASH_WRITE_PROTECTED", "Flash write protected: region is locked"),
         # SDK_CONNECTION_LOST is handled at the WebSocketServer level, not here.
     }
+
+    @classmethod
+    def flash_failure(cls, scenario):
+        """(error_code, message) when `scenario` makes a flash fail, else None."""
+        entry = cls.SCENARIOS.get(scenario)
+        if entry is None or entry[0] != "flash":
+            return None
+        return entry[1], entry[2]
 
     # Demo mode dataset: a synthetic *nested* structure (a struct that contains
     # a sub-struct, an array, and a scalar) so a WebSocket client (e.g. the VS
@@ -333,7 +349,8 @@ class DummyProbe(DebugProbe):
         if error_code is None:
             return  # Special handling (e.g. NO_DEVICES_FOUND returns [] instead of raising)
         msg = msg_template.format(**kwargs) if kwargs else msg_template
-        # Use built-in exceptions where CommandHandler already has specific catch clauses
+        # Raise the type the real failure would arrive as, so the demo exercises
+        # the same classification path the field does.
         if error_code == "PERMISSION_DENIED":
             raise PermissionError(msg)
         elif error_code == "CONNECT_TIMEOUT":

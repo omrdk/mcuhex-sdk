@@ -995,15 +995,16 @@ class CommandHandler:
         loop = asyncio.get_event_loop()
         start_time = loop.time()
 
-        # Scenario: simulate write-protected flash
-        if getattr(self.probe, 'scenario', None) == "CORTEX_M_FLASH_WRITE_PROTECTED":
+        failure = DummyProbe.flash_failure(getattr(self.probe, 'scenario', None))
+        if failure is not None:
+            error_code, msg = failure
             await asyncio.sleep(0.3)
             await websocket.send(json.dumps({
                 "type": "flash_complete",
                 "flash_id": flash_id,
                 "success": False,
-                "error_code": ErrorCode.CORTEX_M_FLASH_WRITE_PROTECTED,
-                "msg": "Flash write protected: region is locked",
+                "error_code": error_code,
+                "msg": msg,
             }))
             self._flash_task = None
             return
