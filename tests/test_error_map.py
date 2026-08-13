@@ -125,6 +125,10 @@ def test_a_missing_file_comes_from_the_operating_system():
         "FLASH_FILE_NOT_FOUND"
 
 
+def test_a_refused_open_comes_from_the_operating_system_too():
+    assert classify(PermissionError(13, "Permission denied"), "connect") == "PERMISSION_DENIED"
+
+
 def test_a_part_pyocd_has_no_support_for_says_so_by_type():
     assert classify(exceptions.TargetSupportError("no target named 'stm32f9'"), "connect") == \
         "CORTEX_M_UNSUPPORTED_TARGET"

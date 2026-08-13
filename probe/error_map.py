@@ -134,6 +134,8 @@ def _from_stlink_status(exc: BaseException, operation: str) -> Optional[str]:
 def _from_type(exc: BaseException, operation: str) -> str:
     if isinstance(exc, FileNotFoundError):
         return "FLASH_FILE_NOT_FOUND"
+    if isinstance(exc, PermissionError):
+        return "PERMISSION_DENIED"
     if isinstance(exc, exceptions.FlashEraseFailure):
         return "FLASH_ERASE_FAILED"
     if isinstance(exc, exceptions.FlashFailure):

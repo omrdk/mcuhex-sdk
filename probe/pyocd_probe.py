@@ -6,6 +6,8 @@ from pyocd.core.soc_target import SoCTarget
 
 from .debugprobe import DebugProbe
 from .device_id import identify
+from .error_map import classify
+from .errors import ProbeError
 from typing import Optional
 
 LOG = logging.getLogger("pyocd-probe")
@@ -61,7 +63,9 @@ class PyOCDProbe(DebugProbe):
 
             session = ConnectHelper.session_with_chosen_probe(**kwargs)
             if session is None:
-                raise RuntimeError("No debug probe found. Connect a debug probe via USB.")
+                raise ProbeError(
+                    "No debug probe found. Connect a debug probe via USB.",
+                    "NO_DEVICES_FOUND")
 
             session.open()
             self.session = session
@@ -76,7 +80,7 @@ class PyOCDProbe(DebugProbe):
             LOG.error(f"Connect failed: {e}")
             self.session = None
             self.target = None
-            raise
+            raise ProbeError(str(e), classify(e, "connect")) from e
 
     def get_target_info(self) -> dict | None:
         if not self.session or not self.target:
@@ -124,18 +128,27 @@ class PyOCDProbe(DebugProbe):
     async def read(self, addr, nb: int):
         if self.target is None:
             raise RuntimeError("Not connected to a target")
-        ls = self.target.read_memory_block8(addr, nb)
+        try:
+            ls = self.target.read_memory_block8(addr, nb)
+        except Exception as e:
+            raise ProbeError(str(e), classify(e, "read", self.target)) from e
         return bytes(ls)
 
     async def write(self, addr, data: bytes):
         if self.target is None:
             raise RuntimeError("Not connected to a target")
-        self.target.write_memory_block8(addr, data)
+        try:
+            self.target.write_memory_block8(addr, data)
+        except Exception as e:
+            raise ProbeError(str(e), classify(e, "write", self.target)) from e
 
     async def write_u32(self, addr, value):
         if self.target is None:
             raise RuntimeError("Not connected to a target")
-        self.target.write_memory_block32(addr, [value])
+        try:
+            self.target.write_memory_block32(addr, [value])
+        except Exception as e:
+            raise ProbeError(str(e), classify(e, "write", self.target)) from e
 
     def list_devices(self) -> list[dict]:
         """List all connected debug probes via PyOCD."""
