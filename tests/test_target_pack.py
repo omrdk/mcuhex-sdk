@@ -13,7 +13,14 @@ import pyocd.target
 from pyocd.target.pack import pack_target
 
 import server as server_mod
+from probe import pack_errors
 from server import CommandHandler, ErrorCode
+
+
+@pytest.fixture(autouse=True)
+def pack_host_answers(monkeypatch):
+    """Classifying a pack failure opens a socket; the suite must not."""
+    monkeypatch.setattr(pack_errors, "pack_host_reachable", lambda: True)
 
 
 class StubProbe:
@@ -34,8 +41,9 @@ class FakePackDevice:
 class FakeCache:
     """Stand-in for cmsis_pack_manager.Cache."""
 
-    def __init__(self, index, fail_download=None, download_delay=0):
+    def __init__(self, index, fail_download=None, download_delay=0, data_path=None):
         self.index = index
+        self.data_path = data_path
         self._fail_download = fail_download
         self._download_delay = download_delay
 
@@ -322,3 +330,38 @@ def test_failed_download_is_reported_with_message(handler):
     assert done["type"] == "pack_complete"
     assert done["success"] is False
     assert "network down" in done["msg"]
+    # Nothing observable was wrong, so the failure keeps the generic code.
+    assert done["error_code"] == ErrorCode.UNKNOWN
+
+
+def test_failed_download_names_a_silent_pack_server(handler, monkeypatch):
+    handler._pack_cache = FakeCache(
+        index={PART: {"name": PART}}, fail_download=RuntimeError("download failed")
+    )
+    monkeypatch.setattr(pack_errors, "pack_host_reachable", lambda: False)
+
+    done = run(install_and_wait(handler, PART))
+
+    assert done["error_code"] == ErrorCode.PACK_NETWORK_UNREACHABLE
+
+
+def test_failed_download_names_a_full_disk_where_the_cache_lives(handler, monkeypatch):
+    handler._pack_cache = FakeCache(
+        index={PART: {"name": PART}},
+        fail_download=RuntimeError("download failed"),
+        data_path="/var/cache/cmsis",
+    )
+    seen = []
+    monkeypatch.setattr(pack_errors, "_free_bytes", lambda path: seen.append(path) or 0)
+
+    done = run(install_and_wait(handler, PART))
+
+    assert done["error_code"] == ErrorCode.PACK_DISK_FULL
+    assert seen == ["/var/cache/cmsis"]
+
+
+def test_a_target_the_index_does_not_have_is_named(handler):
+    done = run(install_and_wait(handler, "STM32NOTREAL"))
+
+    assert done["success"] is False
+    assert done["error_code"] == ErrorCode.CORTEX_M_UNSUPPORTED_TARGET

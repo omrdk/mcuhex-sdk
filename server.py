@@ -14,6 +14,7 @@ from probe.dummyprobe import DummyProbe
 from probe.pyocd_probe import PyOCDProbe
 from probe.errors import ProbeError
 from probe.error_map import classify
+from probe.pack_errors import classify_pack_failure
 
 # OCD/serial drivers (STM32G4, ESP32-C3, TI C2000) are kept out-of-tree for
 # future work; import gracefully so the server still runs when they are absent.
@@ -81,6 +82,12 @@ class ErrorCode:
     FLASH_TARGET_MISMATCH = "FLASH_TARGET_MISMATCH"
     BROWSE_PERMISSION_DENIED = "BROWSE_PERMISSION_DENIED"
     BROWSE_INVALID_PATH = "BROWSE_INVALID_PATH"
+
+    # CMSIS pack downloads
+    PACK_NETWORK_UNREACHABLE = "PACK_NETWORK_UNREACHABLE"
+    PACK_DISK_FULL = "PACK_DISK_FULL"
+    PACK_CACHE_UNWRITABLE = "PACK_CACHE_UNWRITABLE"
+    PACK_MANAGER_UNAVAILABLE = "PACK_MANAGER_UNAVAILABLE"
 
     # TI C2000 family (Kolbus/XDS protocol) -- placeholders for future
     # TI_C2X_...
@@ -1415,6 +1422,7 @@ class CommandHandler:
         push({"type": "pack_progress", "install_id": install_id,
               "phase": "preparing", "msg": "Checking index..."})
 
+        cache = None
         try:
             cache = self._get_pack_cache()
 
@@ -1434,7 +1442,10 @@ class CommandHandler:
                 if matches:
                     target = matches[0]
                 else:
-                    raise RuntimeError(f"Target '{target}' not found in CMSIS-Pack index")
+                    raise ProbeError(
+                        f"Target '{target}' not found in CMSIS-Pack index",
+                        ErrorCode.CORTEX_M_UNSUPPORTED_TARGET,
+                    )
 
             push({"type": "pack_progress", "install_id": install_id,
                   "phase": "downloading",
@@ -1492,12 +1503,17 @@ class CommandHandler:
                 pass
         except Exception as e:
             LOG.error(f"Pack install failed: {e}")
+            # Classifying touches the disk and opens a socket, so it stays off
+            # the event loop like every other blocking pack step.
+            code = await loop.run_in_executor(
+                None, classify_pack_failure, e, getattr(cache, "data_path", None)
+            )
             try:
                 await websocket.send(json.dumps({
                     "type": "pack_complete",
                     "install_id": install_id,
                     "success": False,
-                    "error_code": ErrorCode.UNKNOWN,
+                    "error_code": code,
                     "msg": str(e),
                 }))
             except Exception:
