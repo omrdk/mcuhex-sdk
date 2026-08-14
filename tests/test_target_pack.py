@@ -19,8 +19,11 @@ from server import CommandHandler, ErrorCode
 
 @pytest.fixture(autouse=True)
 def pack_host_answers(monkeypatch):
-    """Classifying a pack failure opens a socket; the suite must not."""
+    """Classifying a pack failure opens a socket, and so does a search; the
+    suite must not. Both the definition and the name the server bound to it."""
     monkeypatch.setattr(pack_errors, "pack_host_reachable", lambda: True)
+    monkeypatch.setattr(pack_errors, "internet_reachable", lambda: True)
+    monkeypatch.setattr(server_mod, "pack_host_reachable", lambda: True)
 
 
 class StubProbe:
@@ -200,10 +203,21 @@ def test_unverified_install_is_reported_as_failure(handler):
 
     assert done["type"] == "pack_complete"
     assert done["success"] is False
-    assert done["error_code"] == ErrorCode.CORTEX_M_UNSUPPORTED_TARGET
+    # Nothing was observed to be wrong, so nothing is claimed to be.
+    assert done["error_code"] == ErrorCode.UNKNOWN
 
     resp = send(handler, {"cmd": "search_targets", "query": PART.lower()})
     assert resp["results"][0]["installed"] is False
+
+
+def test_a_download_that_quietly_fetched_nothing_names_the_silent_server(handler, monkeypatch):
+    """The downloader can return normally and leave nothing behind."""
+    monkeypatch.setattr(pack_errors, "pack_host_reachable", lambda: False)
+
+    done = run(install_and_wait(handler, PART))
+
+    assert done["success"] is False
+    assert done["error_code"] == ErrorCode.PACK_NETWORK_UNREACHABLE
 
 
 def test_search_survives_broken_pack_enumeration(handler, monkeypatch):

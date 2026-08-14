@@ -7,14 +7,18 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import server as server_mod
 from probe import pack_errors
 from server import CommandHandler, ErrorCode
 
 
 @pytest.fixture(autouse=True)
 def pack_host_answers(monkeypatch):
-    """Classifying a pack failure opens a socket; the suite must not."""
+    """Classifying a pack failure opens a socket, and so does a search; the
+    suite must not. Both the definition and the name the server bound to it."""
     monkeypatch.setattr(pack_errors, "pack_host_reachable", lambda: True)
+    monkeypatch.setattr(pack_errors, "internet_reachable", lambda: True)
+    monkeypatch.setattr(server_mod, "pack_host_reachable", lambda: True)
 
 
 def flash_and_ram(flash_size, ram_size):
@@ -308,3 +312,44 @@ def test_a_missing_pack_manager_does_not_empty_the_search(handler, monkeypatch):
 
 def test_a_search_that_worked_says_nothing_about_the_index(handler):
     assert "index_error" not in search(handler, "stm32f103rc")
+
+
+# --- When the index is cached but the server is not answering ---
+
+
+def test_a_part_that_still_needs_its_pack_is_marked_unreachable(handler, monkeypatch):
+    """The cached index outlives the connection that filled it."""
+    monkeypatch.setattr(server_mod, "pack_host_reachable", lambda: False)
+
+    resp = search(handler, "stm32f103c8")
+
+    assert resp["results"][0]["installed"] is False
+    assert resp["packs_reachable"] is False
+    # The list is whole; only the download is out of reach.
+    assert "index_error" not in resp
+
+
+def test_a_reachable_server_is_not_mentioned(handler):
+    assert "packs_reachable" not in search(handler, "stm32f103c8")
+
+
+def test_a_page_that_needs_no_download_does_not_ask_the_network(handler, monkeypatch):
+    def refuse():
+        raise AssertionError("reachability was measured with nothing to download")
+
+    monkeypatch.setattr(server_mod, "pack_host_reachable", refuse)
+
+    resp = search(handler, "stm32f103rc")
+
+    assert resp["results"][0]["installed"] is True
+    assert "packs_reachable" not in resp
+
+
+def test_the_answer_is_reused_instead_of_measured_per_keystroke(handler, monkeypatch):
+    calls = []
+    monkeypatch.setattr(server_mod, "pack_host_reachable", lambda: calls.append(1) or False)
+
+    search(handler, "stm32f103c8")
+    search(handler, "stm32f103c")
+
+    assert len(calls) == 1

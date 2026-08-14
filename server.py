@@ -14,7 +14,11 @@ from probe.dummyprobe import DummyProbe
 from probe.pyocd_probe import PyOCDProbe
 from probe.errors import ProbeError
 from probe.error_map import classify
-from probe.pack_errors import classify_pack_failure
+from probe.pack_errors import (
+    classify_pack_failure,
+    classify_silent_failure,
+    pack_host_reachable,
+)
 
 # OCD/serial drivers (STM32G4, ESP32-C3, TI C2000) are kept out-of-tree for
 # future work; import gracefully so the server still runs when they are absent.
@@ -86,6 +90,7 @@ class ErrorCode:
 
     # CMSIS pack downloads
     PACK_NETWORK_UNREACHABLE = "PACK_NETWORK_UNREACHABLE"
+    PACK_NO_NETWORK = "PACK_NO_NETWORK"
     PACK_DISK_FULL = "PACK_DISK_FULL"
     PACK_CACHE_UNWRITABLE = "PACK_CACHE_UNWRITABLE"
     PACK_MANAGER_UNAVAILABLE = "PACK_MANAGER_UNAVAILABLE"
@@ -105,6 +110,9 @@ if OCD_ESP32C3_Probe is not None:
     PROBE_MAP["OCD_ESP32C3_Probe"] = OCD_ESP32C3_Probe
 
 ESPRESSIF_VID = 0x303A
+
+# How long a reachability answer is trusted before the pack server is asked again.
+REACHABILITY_TTL_S = 30.0
 
 class CommandHandler:
     def __init__(self, probe: DebugProbe, on_state_change: Optional[Callable] = None):
@@ -135,6 +143,8 @@ class CommandHandler:
         # writes the override on every device, and would otherwise drop it.
         self._default_target: Optional[str] = getattr(probe, 'target_override', None)
         self._pack_cache = None  # lazy-loaded cmsis_pack_manager.Cache
+        self._reachable: Optional[bool] = None
+        self._reachable_at: float = 0.0
         self._builtin_target_cache: Optional[Dict[str, Dict[str, Any]]] = None
         self._setup_command_handlers()
 
@@ -1416,7 +1426,24 @@ class CommandHandler:
         response = {"results": results, "total": len(matches)}
         if index_error:
             response["index_error"] = index_error
+        # A cached index outlives the connection that filled it, so a row can
+        # offer a pack that cannot be fetched right now. Only rows that need a
+        # download care, so nothing is asked of the network until one is shown.
+        elif any(not r["installed"] for r in results) and not self._packs_reachable():
+            response["packs_reachable"] = False
         return self._create_success_response(response)
+
+    def _packs_reachable(self) -> bool:
+        """Whether the pack server answered lately.
+
+        Reachability belongs to the network, not to the query, so it is measured
+        once per window rather than once per keystroke.
+        """
+        now = time.monotonic()
+        if self._reachable is None or now - self._reachable_at > REACHABILITY_TTL_S:
+            self._reachable = pack_host_reachable()
+            self._reachable_at = now
+        return self._reachable
 
     async def _handle_install_pack(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """Download and install the CMSIS pack containing a given target."""
@@ -1528,8 +1555,14 @@ class CommandHandler:
                 "installed": installed_ok,
             }
             if not installed_ok:
-                payload["error_code"] = ErrorCode.CORTEX_M_UNSUPPORTED_TARGET
-                payload["msg"] = f"Pack downloaded but '{target}' did not register as installed"
+                # The downloader can return normally and fetch nothing, so a
+                # missing pack is not evidence about the part. Blaming the chip
+                # here sends the user to the one place the answer never is.
+                code = await loop.run_in_executor(
+                    None, classify_silent_failure, getattr(cache, "data_path", None)
+                )
+                payload["error_code"] = code
+                payload["msg"] = f"The pack for '{target}' was not installed"
             await websocket.send(json.dumps(payload))
             if installed_ok:
                 LOG.info(f"Pack for {target} installed")

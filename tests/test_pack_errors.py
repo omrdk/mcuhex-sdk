@@ -80,10 +80,26 @@ class TestObservations:
 
         assert classify_pack_failure(rust_failure(), CACHE) == "PACK_CACHE_UNWRITABLE"
 
-    def test_a_silent_pack_host_explains_the_failure(self, monkeypatch, roomy):
+    def test_a_silent_pack_host_on_a_working_link_blames_the_host(self, monkeypatch, roomy):
         monkeypatch.setattr(pack_errors, "pack_host_reachable", lambda: False)
+        monkeypatch.setattr(pack_errors, "internet_reachable", lambda: True)
 
         assert classify_pack_failure(rust_failure(), CACHE) == "PACK_NETWORK_UNREACHABLE"
+
+    def test_nothing_answering_at_all_blames_the_link(self, monkeypatch, roomy):
+        """Telling a proxied user to check a connection that works wastes their time."""
+        monkeypatch.setattr(pack_errors, "pack_host_reachable", lambda: False)
+        monkeypatch.setattr(pack_errors, "internet_reachable", lambda: False)
+
+        assert classify_pack_failure(rust_failure(), CACHE) == "PACK_NO_NETWORK"
+
+    def test_a_working_link_is_not_asked_about(self, online, roomy, monkeypatch):
+        def refuse():
+            raise AssertionError("the internet was probed with the pack host answering")
+
+        monkeypatch.setattr(pack_errors, "internet_reachable", refuse)
+
+        assert classify_pack_failure(rust_failure(), CACHE) == UNKNOWN
 
     def test_a_reachable_host_and_a_healthy_disk_leave_us_without_an_answer(
         self, online, roomy

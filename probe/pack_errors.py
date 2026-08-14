@@ -40,6 +40,12 @@ UNKNOWN = "UNKNOWN_CONNECTION_ERROR"
 # a given vendor's pack server answers, which is why the code it produces says
 # the pack server was unreachable rather than that the internet is down.
 PACK_HOST = ("www.keil.com", 443)
+
+# Asked only when the pack host has already gone quiet, to tell a link that is
+# down from one that is up but does not carry us. An address, not a name, so a
+# broken resolver does not read as a broken link.
+INTERNET_HOST = ("1.1.1.1", 443)
+
 REACHABILITY_TIMEOUT_S = 2.0
 
 # Not "running low" -- gone. An index is ~14 MB and a pack can be far larger, so
@@ -73,13 +79,23 @@ def classify_pack_failure(exc: BaseException, data_path: Optional[str] = None) -
     if code:
         return code
 
+    return classify_silent_failure(data_path)
+
+
+def classify_silent_failure(data_path: Optional[str] = None) -> str:
+    """The error code for an install that failed without raising anything.
+
+    The downloader can return normally and leave nothing behind, so a caller
+    that only knows the pack is missing still has the same observations to make
+    -- they never depended on the exception in the first place.
+    """
     if data_path:
         code = _from_cache_directory(data_path)
         if code:
             return code
 
     if not pack_host_reachable():
-        return "PACK_NETWORK_UNREACHABLE"
+        return "PACK_NETWORK_UNREACHABLE" if internet_reachable() else "PACK_NO_NETWORK"
 
     return UNKNOWN
 
@@ -143,9 +159,28 @@ def pack_host_reachable() -> bool:
     a link that works, so a True result is the useful one: it stops us blaming
     the network for a failure that happened elsewhere.
     """
+    return _answers(PACK_HOST)
+
+
+def internet_reachable() -> bool:
+    """Whether anything at all answers, asked only once the pack host has not.
+
+    Told apart because the two failures need opposite things from the user: an
+    unplugged link is theirs to fix, a blocked host is their proxy's. Guessing
+    would mean telling half of them to check a connection that is fine.
+    """
+    return _answers(INTERNET_HOST)
+
+
+def _answers(host_port) -> bool:
+    """Whether a TCP connection to `host_port` is accepted within the timeout.
+
+    Nothing is sent and no TLS handshake is made -- the connection is opened and
+    dropped, so the host learns an address reached it and nothing else.
+    """
     try:
-        with socket.create_connection(PACK_HOST, REACHABILITY_TIMEOUT_S):
+        with socket.create_connection(host_port, REACHABILITY_TIMEOUT_S):
             return True
     except OSError as e:
-        LOG.debug(f"Pack host {PACK_HOST[0]} unreachable: {e}")
+        LOG.debug(f"{host_port[0]} unreachable: {e}")
         return False
