@@ -13,6 +13,14 @@ from typing import Optional
 LOG = logging.getLogger("pyocd-probe")
 
 
+def _close_quietly(session, reason: str) -> None:
+    """Release the probe, never letting the release itself become the error."""
+    try:
+        session.close()
+    except Exception as e:
+        LOG.debug(f"Closing the session {reason} failed: {e}")
+
+
 class PyOCDProbe(DebugProbe):
     """Generic PyOCD probe — works with ANY ARM Cortex-M target.
 
@@ -46,6 +54,13 @@ class PyOCDProbe(DebugProbe):
         return self.session is not None and self.session.is_open
 
     async def connect(self) -> bool:
+        # A session we still hold owns the USB interface, so opening a second
+        # one on the same probe is refused by the OS -- and the refusal reads as
+        # a permission problem, which sends the user looking in the wrong place.
+        # Reconnecting after a lost socket or a failed operation lands here.
+        self._release_session("before reconnecting")
+
+        session = None
         try:
             options = {
                 "connect_mode": "attach",
@@ -78,6 +93,12 @@ class PyOCDProbe(DebugProbe):
             return session.is_open
         except Exception as e:
             LOG.error(f"Connect failed: {e}")
+            # Session.open() claims the USB interface before it inits the board,
+            # so a target that fails to answer leaves the probe held with nothing
+            # referencing it. Every later connect would then be refused by the OS
+            # until the process exits.
+            if session is not None:
+                _close_quietly(session, "after a failed connect")
             self.session = None
             self.target = None
             raise ProbeError(str(e), classify(e, "connect")) from e
@@ -108,6 +129,14 @@ class PyOCDProbe(DebugProbe):
         except Exception as e:
             LOG.debug(f"Boot memory lookup failed: {e}")
             return False
+
+    def _release_session(self, reason: str) -> None:
+        """Drop the session we hold, if any, so the probe goes back to the OS."""
+        if self.session is None:
+            return
+        _close_quietly(self.session, reason)
+        self.session = None
+        self.target = None
 
     async def disconnect(self) -> bool:
         if self.session is None:
