@@ -53,6 +53,7 @@ class ErrorCode:
     PROBE_MISMATCH = "PROBE_DRIVER_MISMATCH"
     PROBE_FIRMWARE_TOO_OLD = "PROBE_FIRMWARE_TOO_OLD"
     PROBE_ALREADY_OPEN = "PROBE_ALREADY_OPEN"
+    PROBE_TRANSPORT_UNSUPPORTED = "PROBE_TRANSPORT_UNSUPPORTED"
     READ_WRITE_FAILED = "READ_WRITE_FAILED"
     UNKNOWN = "UNKNOWN_CONNECTION_ERROR"
 
@@ -122,6 +123,8 @@ class CommandHandler:
         self._connected_uri: Optional[str] = None
         self._websocket = None  # set per-client in handle_client
         self._device_probe_map: Dict[str, str] = {}
+        # Devices the last scan saw but has no transport driver for.
+        self._unsupported_devices: set = set()
         # Device ids from the last scan, whoever asked for it; None until the
         # first one, so the watcher can tell "nothing plugged" from "not yet
         # looked" and does not announce a change that never happened.
@@ -310,20 +313,33 @@ class CommandHandler:
         try:
             for d in PyOCDProbe().list_devices():
                 d['family'] = 'ARM Cortex-M'
+                d['transport'] = 'swd'
+                d['supported'] = True
                 all_devices.append(d)
                 probe_map[d['device']] = 'PyOCDProbe'
                 pyocd_uids.add(d['device'])
         except Exception as e:
             LOG.debug(f"PyOCD scan skipped: {e}")
 
-        # USB serial: all devices with VID/PID (real hardware)
+        # USB serial: all devices with VID/PID (real hardware). Probe classes are
+        # split by the transport they speak, and only the SWD one exists today.
+        # These stay in the list marked unsupported rather than being dropped:
+        # a user who cannot find their board here learns nothing from an empty
+        # list, and their device is not the thing that is missing.
         try:
             for d in DebugProbe().list_devices():
                 if d['device'] in pyocd_uids:
                     continue
                 if d.get('vid') == ESPRESSIF_VID:
                     d['family'] = 'ESP32'
-                    probe_map[d['device']] = 'OCD_ESP32C3_Probe'
+                    d['transport'] = 'openocd'
+                    # The OpenOCD driver is kept out-of-tree, so whether these
+                    # can be connected is decided by whether it imported.
+                    if OCD_ESP32C3_Probe is not None:
+                        probe_map[d['device']] = 'OCD_ESP32C3_Probe'
+                else:
+                    d['transport'] = 'serial'
+                d['supported'] = d['device'] in probe_map
                 all_devices.append(d)
         except Exception as e:
             LOG.debug(f"USB serial scan skipped: {e}")
@@ -331,6 +347,9 @@ class CommandHandler:
         # Rebound in one step: connect() reads this map, and a half-filled one
         # would pick the wrong probe class for a device.
         self._device_probe_map = probe_map
+        self._unsupported_devices = {
+            d['device'] for d in all_devices if not d.get('supported', True)
+        }
         self._known_devices = tuple(sorted(d['device'] for d in all_devices))
         return all_devices
 
@@ -340,6 +359,15 @@ class CommandHandler:
             return self._create_error_response("No device uri specified")
 
         uri = cmd["uri"]
+        # Only a device the last scan saw and could not place is refused here.
+        # A uri we have never scanned is not evidence of anything, and rejecting
+        # it would break a client that connects without listing first.
+        if uri in self._unsupported_devices:
+            raise ProbeError(
+                f"No transport driver for {uri}",
+                ErrorCode.PROBE_TRANSPORT_UNSUPPORTED,
+            )
+
         target_probe = self._device_probe_map.get(uri)
         if target_probe and target_probe in PROBE_MAP:
             current = type(self.probe).__name__

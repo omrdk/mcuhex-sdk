@@ -365,3 +365,81 @@ def test_a_target_the_index_does_not_have_is_named(handler):
 
     assert done["success"] is False
     assert done["error_code"] == ErrorCode.CORTEX_M_UNSUPPORTED_TARGET
+
+
+# --- Devices we have no transport for ---
+
+
+class FakeSerialPort:
+    def __init__(self, device, vid=0x1A86, pid=0x7523):
+        self.device = device
+        self.description = "USB Serial"
+        self.manufacturer = "QinHeng"
+        self.vid = vid
+        self.pid = pid
+        self.hwid = f"USB VID:PID={vid:04X}:{pid:04X}"
+        self.product = "CH340"
+
+
+def list_with_serial(handler, monkeypatch, ports, probes=()):
+    import probe.pyocd_probe as pp
+
+    monkeypatch.setattr(
+        pp.ConnectHelper, "get_all_connected_probes", staticmethod(lambda blocking=False: probes)
+    )
+    monkeypatch.setattr("serial.tools.list_ports.comports", lambda: ports)
+    resp = send(handler, {"cmd": "list_devices"})
+    assert resp["status"] == 0
+    return resp["devices"]
+
+
+def test_a_serial_device_is_listed_and_marked_unsupported(handler, monkeypatch):
+    """Dropping it would leave a user looking for their board at an empty list."""
+    devices = list_with_serial(handler, monkeypatch, [FakeSerialPort("/dev/cu.usbserial-110")])
+
+    assert devices[0]["device"] == "/dev/cu.usbserial-110"
+    assert devices[0]["supported"] is False
+    assert devices[0]["transport"] == "serial"
+
+
+def test_an_swd_probe_is_supported(handler, monkeypatch):
+    devices = list_with_serial(handler, monkeypatch, [], [FakePyocdProbe("usb://stlink")])
+
+    assert (devices[0]["supported"], devices[0]["transport"]) == (True, "swd")
+
+
+def test_an_esp32_is_supported_only_with_its_driver(handler, monkeypatch):
+    monkeypatch.setitem(server_mod.PROBE_MAP, "OCD_ESP32C3_Probe", object)
+    monkeypatch.setattr(server_mod, "OCD_ESP32C3_Probe", object)
+
+    devices = list_with_serial(
+        handler, monkeypatch, [FakeSerialPort("/dev/cu.esp", vid=0x303A)]
+    )
+
+    assert (devices[0]["supported"], devices[0]["transport"]) == (True, "openocd")
+
+
+def test_an_esp32_without_its_driver_is_not_offered(handler, monkeypatch):
+    monkeypatch.setattr(server_mod, "OCD_ESP32C3_Probe", None)
+
+    devices = list_with_serial(
+        handler, monkeypatch, [FakeSerialPort("/dev/cu.esp", vid=0x303A)]
+    )
+
+    assert devices[0]["supported"] is False
+
+
+def test_connecting_to_a_device_we_cannot_speak_to_says_so(handler, monkeypatch):
+    list_with_serial(handler, monkeypatch, [FakeSerialPort("/dev/cu.usbserial-110")])
+
+    resp = send(handler, {"cmd": "connect", "uri": "/dev/cu.usbserial-110"})
+
+    assert resp["status"] != 0
+    assert resp["error_code"] == ErrorCode.PROBE_TRANSPORT_UNSUPPORTED
+
+
+def test_a_uri_no_scan_has_seen_is_not_refused_on_that_basis(handler):
+    """Refusing an unscanned uri would break a client that connects directly."""
+    resp = send(handler, {"cmd": "connect", "uri": "usb://never-scanned"})
+
+    assert resp.get("error_code") != ErrorCode.PROBE_TRANSPORT_UNSUPPORTED
