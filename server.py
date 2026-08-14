@@ -1268,19 +1268,27 @@ class CommandHandler:
         query = (cmd.get("query") or "").strip().lower()
         limit = int(cmd.get("limit", 30))
 
+        # A search that cannot reach the index is not an empty search: the
+        # built-in targets pyOCD ships still work, and are the ones an offline
+        # user can actually apply. The list is served with the reason it is
+        # short instead of the whole call failing.
+        index_error = None
+        cache = None
         try:
             cache = self._get_pack_cache()
         except Exception as e:
-            raise ProbeError(f"Pack manager unavailable: {e}", ErrorCode.UNKNOWN)
+            LOG.warning(f"Pack manager unavailable: {e}")
+            index_error = classify_pack_failure(e)
 
-        index = cache.index or {}
-        if not index:
+        index = (cache.index if cache else None) or {}
+        if cache is not None and not index:
             # Fetch the descriptor list once so future searches work
             try:
                 cache.cache_descriptors()
                 index = cache.index or {}
             except Exception as e:
                 LOG.warning(f"Descriptor download failed: {e}")
+                index_error = classify_pack_failure(e, getattr(cache, "data_path", None))
 
         installed = self._get_installed_target_names()
         builtins = self._builtin_targets()
@@ -1370,7 +1378,10 @@ class CommandHandler:
 
         # `total` counts every match, not the truncated page, so the client can
         # say how much it is not showing.
-        return self._create_success_response({"results": results, "total": len(matches)})
+        response = {"results": results, "total": len(matches)}
+        if index_error:
+            response["index_error"] = index_error
+        return self._create_success_response(response)
 
     async def _handle_install_pack(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """Download and install the CMSIS pack containing a given target."""

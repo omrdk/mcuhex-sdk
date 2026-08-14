@@ -7,7 +7,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from server import CommandHandler
+from probe import pack_errors
+from server import CommandHandler, ErrorCode
+
+
+@pytest.fixture(autouse=True)
+def pack_host_answers(monkeypatch):
+    """Classifying a pack failure opens a socket; the suite must not."""
+    monkeypatch.setattr(pack_errors, "pack_host_reachable", lambda: True)
 
 
 def flash_and_ram(flash_size, ram_size):
@@ -256,3 +263,48 @@ def test_a_part_is_judged_by_its_m_profile_core(handler):
     row = search(handler, "mcimx6x1")["results"][0]
 
     assert (row["core"], row["support"]) == ("CortexM4", "monitor")
+
+
+# --- When the index cannot be reached ---
+
+
+class UnreachableCache:
+    """A cache that has nothing yet and cannot fetch it."""
+
+    index = {}
+
+    def __init__(self, data_path):
+        self.data_path = data_path
+
+    def cache_descriptors(self):
+        raise Exception("Could not download pdsc index")
+
+
+def test_a_search_without_an_index_still_offers_the_built_ins(handler, monkeypatch, tmp_path):
+    # A real, writable directory: the disk has to be healthy for the network to
+    # be the answer.
+    handler._pack_cache = UnreachableCache(str(tmp_path))
+    monkeypatch.setattr(pack_errors, "pack_host_reachable", lambda: False)
+
+    resp = search(handler, "stm32f103rc")
+
+    assert resp["status"] == 0
+    assert resp["results"][0]["source"] == "builtin"
+    assert resp["index_error"] == ErrorCode.PACK_NETWORK_UNREACHABLE
+
+
+def test_a_missing_pack_manager_does_not_empty_the_search(handler, monkeypatch):
+    monkeypatch.setattr(
+        CommandHandler,
+        "_get_pack_cache",
+        lambda self: (_ for _ in ()).throw(ImportError("No module named 'cmsis_pack_manager'")),
+    )
+
+    resp = search(handler, "stm32f103rc")
+
+    assert resp["results"][0]["source"] == "builtin"
+    assert resp["index_error"] == ErrorCode.PACK_MANAGER_UNAVAILABLE
+
+
+def test_a_search_that_worked_says_nothing_about_the_index(handler):
+    assert "index_error" not in search(handler, "stm32f103rc")
