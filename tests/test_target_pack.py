@@ -32,6 +32,15 @@ class StubProbe:
     def set_target_override(self, target):
         self.override = target
 
+    async def set_port(self, port):
+        self.port = port
+
+    async def connect(self):
+        return False
+
+    def get_target_info(self):
+        return None
+
 
 class FakePackDevice:
     def __init__(self, part_number):
@@ -443,3 +452,39 @@ def test_a_uri_no_scan_has_seen_is_not_refused_on_that_basis(handler):
     resp = send(handler, {"cmd": "connect", "uri": "usb://never-scanned"})
 
     assert resp.get("error_code") != ErrorCode.PROBE_TRANSPORT_UNSUPPORTED
+
+
+# --- One probe, several boards ---
+
+
+def test_a_device_with_no_target_of_its_own_does_not_inherit_one(handler, monkeypatch):
+    set_installed(monkeypatch, [PART])
+    send(handler, {"cmd": "set_target", "uri": "usb://1", "target": PART})
+
+    send(handler, {"cmd": "connect", "uri": "usb://2"})
+
+    assert handler.probe.override is None
+
+
+def test_a_device_keeps_its_own_target_across_another_connect(handler, monkeypatch):
+    set_installed(monkeypatch, [PART])
+    send(handler, {"cmd": "set_target", "uri": "usb://1", "target": PART})
+    send(handler, {"cmd": "connect", "uri": "usb://2"})
+
+    send(handler, {"cmd": "connect", "uri": "usb://1"})
+
+    assert handler.probe.override == PART
+
+
+def test_the_target_given_at_startup_outlives_a_device_without_one(monkeypatch):
+    """--target names the part for everything; clearing per device would drop it."""
+    monkeypatch.setattr(
+        pack_target.ManagedPacks, "populate_target", staticmethod(lambda name: None)
+    )
+    probe = StubProbe()
+    probe.target_override = "cortex_m"
+
+    h = CommandHandler(probe)
+    send(h, {"cmd": "connect", "uri": "usb://2"})
+
+    assert h.probe.override == "cortex_m"

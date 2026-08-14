@@ -131,6 +131,9 @@ class CommandHandler:
         self._known_devices: Optional[tuple] = None
         # Per-device target overrides (device_uri -> pyocd target name)
         self._target_overrides: Dict[str, str] = {}
+        # What --target asked for, if anything. Kept because a connect now
+        # writes the override on every device, and would otherwise drop it.
+        self._default_target: Optional[str] = getattr(probe, 'target_override', None)
         self._pack_cache = None  # lazy-loaded cmsis_pack_manager.Cache
         self._builtin_target_cache: Optional[Dict[str, Dict[str, Any]]] = None
         self._setup_command_handlers()
@@ -377,14 +380,18 @@ class CommandHandler:
                 self._notify_state_change()
 
         # Apply per-device target override (set via set_target), if any
-        override = self._target_overrides.get(uri) or cmd.get("target")
-        if override and hasattr(self.probe, 'set_target_override'):
-            # Ensure the target is registered (installed pack -> populate_target)
-            try:
-                from pyocd.target.pack.pack_target import ManagedPacks
-                ManagedPacks.populate_target(override)
-            except Exception as e:
-                LOG.debug(f"populate_target({override}) skipped: {e}")
+        override = self._target_overrides.get(uri) or cmd.get("target") or self._default_target
+        if hasattr(self.probe, 'set_target_override'):
+            if override:
+                # Ensure the target is registered (installed pack -> populate_target)
+                try:
+                    from pyocd.target.pack.pack_target import ManagedPacks
+                    ManagedPacks.populate_target(override)
+                except Exception as e:
+                    LOG.debug(f"populate_target({override}) skipped: {e}")
+            # The probe holds one override and outlives any single connection, so
+            # a device that has none has to say so out loud. Left unsaid, it opens
+            # as whatever part the previously connected device was told to be.
             self.probe.set_target_override(override)
 
         await self.probe.set_port(uri)
