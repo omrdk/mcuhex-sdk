@@ -4,7 +4,7 @@ import os
 import sys
 
 APP_NAME = "MCUHex"
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
