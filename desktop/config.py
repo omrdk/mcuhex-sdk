@@ -2,9 +2,18 @@
 
 import os
 import sys
+from importlib.metadata import PackageNotFoundError, version as _installed_version
 
 APP_NAME = "MCUHex"
-VERSION = "0.1.0"
+
+# Read from the package metadata rather than repeating the number here: this
+# value reaches the web app on every reply and ends up in the analytics, where a
+# stale constant is worse than no version at all — it looks like real data.
+try:
+    VERSION = _installed_version("mcuhex-sdk")
+except PackageNotFoundError:
+    # Running from a source tree that was never installed.
+    VERSION = "0.0.0+source"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
