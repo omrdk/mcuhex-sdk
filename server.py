@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 
+import base64
 import logging
 import json
 import os
+import shutil
 import struct
+import tempfile
 import time
 import asyncio
 import websockets
@@ -35,6 +38,26 @@ LOG = logging.getLogger(__name__)
 # Interval between pack_progress heartbeats during long pack operations.
 # The web client treats a silence several times this long as a stalled install.
 PACK_HEARTBEAT_SECS = 5
+
+# Ceiling on an uploaded firmware image, and the frame size that has to carry
+# it. A whole image travels in one message, so the transport limit is the
+# base64-inflated payload plus room for the envelope; the web app rejects
+# anything over MAX_UPLOAD_BYTES before it ever reaches the wire.
+MAX_UPLOAD_BYTES = 16 * 1024 * 1024
+MAX_WS_MESSAGE_BYTES = 24 * 1024 * 1024
+
+
+def loggable(message: Dict[str, Any]) -> Dict[str, Any]:
+    """A message with its payload replaced by a description of it.
+
+    A firmware upload and a memory read both put megabytes in `data`. Writing
+    that to a terminal blocks until the terminal has rendered it, and the event
+    loop stalls there -- long enough for a flash to look hung.
+    """
+    data = message.get("data")
+    if not isinstance(data, str) or len(data) <= 64:
+        return message
+    return {**message, "data": f"<{len(data)} chars>"}
 
 # How often an open session re-checks that its probe is still on the bus, and
 # how many consecutive misses it takes to call the device gone. Enumeration can
@@ -85,8 +108,9 @@ class ErrorCode:
     FLASH_PROGRAM_FAILED = "FLASH_PROGRAM_FAILED"
     FLASH_IMAGE_DOES_NOT_FIT = "FLASH_IMAGE_DOES_NOT_FIT"
     FLASH_TARGET_MISMATCH = "FLASH_TARGET_MISMATCH"
-    BROWSE_PERMISSION_DENIED = "BROWSE_PERMISSION_DENIED"
-    BROWSE_INVALID_PATH = "BROWSE_INVALID_PATH"
+    FLASH_FILE_TOO_LARGE = "FLASH_FILE_TOO_LARGE"
+    FLASH_FILE_EMPTY = "FLASH_FILE_EMPTY"
+    FLASH_UPLOAD_FAILED = "FLASH_UPLOAD_FAILED"
 
     # CMSIS pack downloads
     PACK_NETWORK_UNREACHABLE = "PACK_NETWORK_UNREACHABLE"
@@ -125,6 +149,8 @@ class CommandHandler:
         self._cancel_capture: bool = False
         self._flash_task: Optional[asyncio.Task] = None
         self._cancel_flash: bool = False
+        # Temp directory holding the firmware image the client uploaded, if any.
+        self._staged_dir: Optional[str] = None
         self._pack_task: Optional[asyncio.Task] = None
         self._device_watch_task: Optional[asyncio.Task] = None
         self._bus_watch_task: Optional[asyncio.Task] = None
@@ -164,7 +190,6 @@ class CommandHandler:
             'calibrate': (self._handle_calibrate, 0, True),
             'capture': (self._handle_capture, 3, True),
             'stop_capture': (self._handle_stop_capture, 0, True),
-            'browse_files': (self._handle_browse_files, 0, False),
             'flash': (self._handle_flash, 1, True),
             'cancel_flash': (self._handle_cancel_flash, 0, True),
             'search_targets': (self._handle_search_targets, 0, False),
@@ -183,7 +208,7 @@ class CommandHandler:
             "sdk_version": VERSION,
             **({"id": cmd["id"]} if "id" in cmd else {})
         }
-        LOG.info(f"Got command {cmd}")
+        LOG.info(f"Got command {loggable(cmd)}")
         command_name = cmd.get("cmd")
         
         if not command_name:
@@ -660,73 +685,60 @@ class CommandHandler:
 
     SUPPORTED_FLASH_EXTS = ('.hex', '.bin', '.elf', '.axf')
 
-    def _handle_browse_files(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
-        """List files and directories under the given path. Security: restricted to $HOME."""
-        directory = cmd.get("directory") or os.path.expanduser("~")
-        extensions = cmd.get("extensions") or list(self.SUPPORTED_FLASH_EXTS)
+    def _stage_upload(self, file_name: str, data: str) -> str:
+        """Write an uploaded firmware image to a temp file and return its path.
 
-        # Normalize and resolve to absolute, real path (follows symlinks)
-        try:
-            resolved = os.path.realpath(os.path.expanduser(directory))
-        except Exception as e:
-            raise ProbeError(f"Invalid path: {directory}", ErrorCode.BROWSE_INVALID_PATH)
+        The name the browser sent is kept verbatim: _image_ranges picks its
+        parser from the extension, so a staged file that lost it would be read
+        as raw binary and programmed at the wrong addresses.
+        """
+        file_name = os.path.basename(file_name or "")
+        if not file_name or file_name in ('.', '..'):
+            raise ProbeError("'file_name' is required", ErrorCode.FLASH_UPLOAD_FAILED)
 
-        home = os.path.realpath(os.path.expanduser("~"))
-        # Security: reject paths outside $HOME
-        if not (resolved == home or resolved.startswith(home + os.sep)):
+        ext = os.path.splitext(file_name)[1].lower()
+        if ext not in self.SUPPORTED_FLASH_EXTS:
             raise ProbeError(
-                "Access denied: path is outside the home directory",
-                ErrorCode.BROWSE_PERMISSION_DENIED
+                f"Unsupported firmware format: {ext}",
+                ErrorCode.FLASH_UNSUPPORTED_FORMAT
             )
-
-        if not os.path.isdir(resolved):
-            raise ProbeError(
-                f"Not a directory: {directory}",
-                ErrorCode.BROWSE_INVALID_PATH
-            )
-
-        ext_set = {e.lower() for e in extensions}
-        entries = []
 
         try:
-            for name in os.listdir(resolved):
-                if name.startswith('.'):
-                    continue
-                full_path = os.path.join(resolved, name)
-                try:
-                    if os.path.isdir(full_path):
-                        entries.append({"name": name, "type": "dir"})
-                    elif os.path.isfile(full_path):
-                        if ext_set:
-                            _, ext = os.path.splitext(name)
-                            if ext.lower() not in ext_set:
-                                continue
-                        try:
-                            size = os.path.getsize(full_path)
-                        except OSError:
-                            size = 0
-                        entries.append({"name": name, "type": "file", "size": size})
-                except OSError:
-                    continue  # skip unreadable entries
-        except PermissionError:
+            payload = base64.b64decode(data, validate=True)
+        except Exception:
             raise ProbeError(
-                f"Permission denied: {directory}",
-                ErrorCode.BROWSE_PERMISSION_DENIED
+                "Firmware payload is not valid base64",
+                ErrorCode.FLASH_UPLOAD_FAILED
+            )
+        if not payload:
+            raise ProbeError(
+                f"{file_name} is empty -- there is nothing to program",
+                ErrorCode.FLASH_FILE_EMPTY
+            )
+        if len(payload) > MAX_UPLOAD_BYTES:
+            raise ProbeError(
+                f"Firmware is {len(payload)} bytes, over the "
+                f"{MAX_UPLOAD_BYTES} byte limit",
+                ErrorCode.FLASH_FILE_TOO_LARGE
             )
 
-        # Sort: directories first (alphabetical), then files (alphabetical), case-insensitive
-        entries.sort(key=lambda e: (0 if e["type"] == "dir" else 1, e["name"].lower()))
+        self._discard_staged()
+        try:
+            self._staged_dir = tempfile.mkdtemp(prefix='mcuhex-flash-')
+            path = os.path.join(self._staged_dir, file_name)
+            with open(path, 'wb') as f:
+                f.write(payload)
+        except OSError as e:
+            self._discard_staged()
+            raise ProbeError(f"Cannot stage firmware: {e}", ErrorCode.FLASH_UPLOAD_FAILED)
 
-        # Determine parent (None if already at or above home)
-        parent = os.path.dirname(resolved) if resolved != home else None
-        if parent and not (parent == home or parent.startswith(home + os.sep)):
-            parent = None
+        LOG.info(f"Staged {file_name} ({len(payload)} bytes) at {path}")
+        return path
 
-        return self._create_success_response({
-            "directory": resolved,
-            "parent": parent,
-            "entries": entries[:500]
-        })
+    def _discard_staged(self) -> None:
+        if self._staged_dir:
+            shutil.rmtree(self._staged_dir, ignore_errors=True)
+            self._staged_dir = None
 
     async def _handle_flash(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """Start a firmware flash operation as a background task."""
@@ -740,22 +752,10 @@ class CommandHandler:
         if not self.probe.is_open():
             raise ProbeError("Probe not connected", ErrorCode.FLASH_PROBE_NOT_CONNECTED)
 
-        file_path = cmd.get("file_path")
-        if not file_path:
-            raise ValueError("'file_path' is required")
-
-        # Expand ~ and resolve to absolute path so the SDK reads the intended file
-        file_path = os.path.realpath(os.path.expanduser(file_path))
-
-        if not os.path.isfile(file_path):
-            raise ProbeError(f"File not found: {file_path}", ErrorCode.FLASH_FILE_NOT_FOUND)
-
-        _, ext = os.path.splitext(file_path)
-        if ext.lower() not in self.SUPPORTED_FLASH_EXTS:
-            raise ProbeError(
-                f"Unsupported firmware format: {ext}",
-                ErrorCode.FLASH_UNSUPPORTED_FORMAT
-            )
+        data = cmd.get("data")
+        if data is None:
+            raise ValueError("'data' is required")
+        file_path = self._stage_upload(cmd.get("file_name"), data)
 
         chip_erase = cmd.get("chip_erase", "auto")
         verify = cmd.get("verify", True)
@@ -768,6 +768,9 @@ class CommandHandler:
                 self._websocket, file_path, chip_erase, verify, no_reset, flash_id
             )
         )
+        # Covers every way the task can end -- success, failure, cancel -- so a
+        # staged image never outlives the flash it was uploaded for.
+        self._flash_task.add_done_callback(lambda _: self._discard_staged())
         return self._create_success_response({"msg": "flash_started"})
 
     @staticmethod
@@ -1721,7 +1724,7 @@ class WebSocketServer:
                 try:
                     cmd = json.loads(message)
                     response = await self.process_command(cmd)
-                    LOG.info(f"Sending response: {json.dumps(response)}")
+                    LOG.info(f"Sending response: {json.dumps(loggable(response))}")
                     await websocket.send(json.dumps(response))
                     # SDK_CONNECTION_LOST scenario: close WebSocket after successful connect
                     if (self.scenario == "SDK_CONNECTION_LOST"
@@ -1756,6 +1759,9 @@ class WebSocketServer:
                 self.handler._cancel_flash = True
                 self.handler._flash_task.cancel()
                 self.handler._flash_task = None
+            # Staged firmware belongs to the session that sent it; a client that
+            # drops before flashing would otherwise leave the temp copy behind.
+            self.handler._discard_staged()
             # The watchers push to this socket, so they die with the client
             self.handler._stop_device_watch()
             self.handler._stop_bus_watch()
@@ -1775,7 +1781,7 @@ class WebSocketServer:
 
     async def process_command(self, cmd):
         """Process incoming commands using polymorphic handler"""
-        LOG.info(f"Got command {cmd}")
+        LOG.info(f"Got command {loggable(cmd)}")
         return await self.handler.execute_command(cmd)
 
     async def broadcast(self, message):
@@ -1791,7 +1797,8 @@ class WebSocketServer:
             self.handle_client,
             self.host,
             self.port,
-            origins=ALLOWED_ORIGINS
+            origins=ALLOWED_ORIGINS,
+            max_size=MAX_WS_MESSAGE_BYTES
         )
         LOG.info(f"WebSocket server started on ws://{self.host}:{self.port}")
 

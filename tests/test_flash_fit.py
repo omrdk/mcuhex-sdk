@@ -26,8 +26,21 @@ class MemoryMap:
     """An STM32F103C8: 64K of flash and 20K of RAM, nothing in between."""
     regions = [Region(FLASH_START, FLASH_SIZE), Region(RAM_START, 20 * 1024, is_flash=False)]
 
-    def get_region_for_address(self, address, core_name=None):
+    def get_region_for_address(self, address, pname=None):
         return next((r for r in self.regions if r.start <= address <= r.end), None)
+
+
+def test_the_stub_map_takes_what_the_real_one_takes():
+    # _check_image_fits passes the core name positionally. pyOCD only grew that
+    # parameter in 0.37, so against an older build every flash dies on the
+    # argument count — and a stub free to accept anything says nothing about it.
+    import inspect
+    from pyocd.core.memory_map import MemoryMap as PyocdMemoryMap
+
+    real = inspect.signature(PyocdMemoryMap.get_region_for_address).parameters
+    stub = inspect.signature(MemoryMap.get_region_for_address).parameters
+
+    assert list(stub) == list(real)
 
 
 class StubProbe:
