@@ -4,11 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcuhex-sdk"
-version = "0.2.0"
+dynamic = ["version"]
 requires-python = ">=3.8"
 
 [tool.setuptools]
 py-modules = ["server"]
+
+[tool.setuptools.dynamic]
+version = { attr = "desktop.config.VERSION" }
 
 [tool.setuptools.packages.find]
 include = ["probe*", "desktop*"]

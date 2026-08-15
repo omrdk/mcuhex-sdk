@@ -2,18 +2,12 @@
 
 import os
 import sys
-from importlib.metadata import PackageNotFoundError, version as _installed_version
 
 APP_NAME = "MCUHex"
-
-# Read from the package metadata rather than repeating the number here: this
-# value reaches the web app on every reply and ends up in the analytics, where a
-# stale constant is worse than no version at all — it looks like real data.
-try:
-    VERSION = _installed_version("mcuhex-sdk")
-except PackageNotFoundError:
-    # Running from a source tree that was never installed.
-    VERSION = "0.0.0+source"
+# The one place the version is written. The release script bumps it, CI checks
+# the tag against it, and pyproject.toml reads it from here — a second copy
+# anywhere would be the one that goes stale.
+VERSION = "0.2.0"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
