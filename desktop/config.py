@@ -7,7 +7,7 @@ APP_NAME = "MCUHex"
 # The one place the version is written. The release script bumps it, CI checks
 # the tag against it, and pyproject.toml reads it from here — a second copy
 # anywhere would be the one that goes stale.
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
