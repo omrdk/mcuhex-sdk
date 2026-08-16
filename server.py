@@ -46,6 +46,11 @@ PACK_HEARTBEAT_SECS = 5
 MAX_UPLOAD_BYTES = 16 * 1024 * 1024
 MAX_WS_MESSAGE_BYTES = 24 * 1024 * 1024
 
+# How often a running capture hands over what it has taken so far. Short enough
+# that a plot advances while the eye is on it, long enough that a fast capture
+# is not spending its budget on framing instead of reads.
+CAPTURE_PROGRESS_S = 0.25
+
 
 def loggable(message: Dict[str, Any]) -> Dict[str, Any]:
     """A message with its payload replaced by a description of it.
@@ -147,6 +152,9 @@ class CommandHandler:
         self._on_state_change = on_state_change
         self._capture_task: Optional[asyncio.Task] = None
         self._cancel_capture: bool = False
+        # Read by the capture loop on every sample, so a rate change lands
+        # without tearing the run down and losing the trace on screen.
+        self._capture_rate_hz: float = 1.0
         self._flash_task: Optional[asyncio.Task] = None
         self._cancel_flash: bool = False
         # Temp directory holding the firmware image the client uploaded, if any.
@@ -190,6 +198,7 @@ class CommandHandler:
             'calibrate': (self._handle_calibrate, 0, True),
             'capture': (self._handle_capture, 3, True),
             'stop_capture': (self._handle_stop_capture, 0, True),
+            'set_capture_rate': (self._handle_set_capture_rate, 1, True),
             'flash': (self._handle_flash, 1, True),
             'cancel_flash': (self._handle_cancel_flash, 0, True),
             'search_targets': (self._handle_search_targets, 0, False),
@@ -617,10 +626,12 @@ class CommandHandler:
 
         channels = cmd.get("channels")
         rate_hz = cmd.get("rate_hz")
-        duration_s = cmd.get("duration_s")
+        # Omitted or zero means run until stop_capture -- a live view has no
+        # length to ask for, and asking anyway is what made it a recording.
+        duration_s = cmd.get("duration_s") or 0
 
-        if not channels or not rate_hz or not duration_s:
-            raise ValueError("'channels', 'rate_hz', and 'duration_s' are required")
+        if not channels or not rate_hz:
+            raise ValueError("'channels' and 'rate_hz' are required")
 
         self._cancel_capture = False
         capture_id = cmd.get("id")
@@ -630,35 +641,75 @@ class CommandHandler:
         return self._create_success_response({"msg": "capture_started"})
 
     async def _run_capture(self, websocket, channels, rate_hz, duration_s, capture_id):
-        """Server-side capture loop. Reads channels at the target rate and pushes results when done."""
-        period = 1.0 / rate_hz
-        samples = []
+        """Server-side capture loop.
+
+        Samples reach the client as they are taken, not only when the run ends:
+        a capture that says nothing until it is over can only be waited out, not
+        watched.
+
+        With no duration the loop runs until stop_capture, and then it keeps no
+        history at all -- a live view that never ends would otherwise grow a
+        list until the process died. A bounded run still accumulates and still
+        repeats the whole thing at the end, so a client that ignores the
+        progress messages behaves exactly as it did before they existed.
+        """
+        pending = []
         loop = asyncio.get_event_loop()
         start = loop.time()
-        max_samples = int(rate_hz * duration_s)
+        # The loop reads the rate off the handler so set_capture_rate can move
+        # it mid-run; seeding it here keeps the argument the one that decides
+        # where a run starts, rather than whatever the previous run left behind.
+        self._capture_rate_hz = float(rate_hz)
+        unlimited = duration_s <= 0
+        history = None if unlimited else []
+        max_samples = 0 if unlimited else int(rate_hz * duration_s)
+        taken = 0
+        next_progress_at = start + CAPTURE_PROGRESS_S
+        next_sample_at = start
+        progress_ok = True
 
         try:
-            for i in range(max_samples):
-                if self._cancel_capture:
-                    break
+            while not self._cancel_capture and (unlimited or taken < max_samples):
                 t = (loop.time() - start) * 1000  # ms since capture start
                 row = [round(t, 2)]
                 for ch in channels:
                     raw = await self.probe.read(ch["addr"], ch["nb"])
                     row.append(self._decode_value(raw, ch.get("type", "U32")))
-                samples.append(row)
+                pending.append(row)
+                if history is not None:
+                    history.append(row)
+                taken += 1
 
-                # Sleep to maintain target rate
-                elapsed = loop.time() - start
-                target = (i + 1) * period
-                sleep_time = target - elapsed
+                now = loop.time()
+                if progress_ok and now >= next_progress_at and pending:
+                    progress_ok = await self._send_capture_progress(
+                        websocket, capture_id, pending, taken - len(pending))
+                    pending = []
+                    next_progress_at = now + CAPTURE_PROGRESS_S
+
+                # Advanced one period at a time rather than measured from the
+                # start, so a rate changed mid-run takes effect on the next
+                # sample instead of making the schedule jump to catch up with
+                # where the old rate would have put it by now.
+                next_sample_at += 1.0 / self._capture_rate_hz
+                sleep_time = next_sample_at - loop.time()
                 if sleep_time > 0:
                     await asyncio.sleep(sleep_time)
+                else:
+                    # Behind the requested rate: yield anyway, or a rate the
+                    # probe cannot meet would starve every other task.
+                    next_sample_at = loop.time()
+                    await asyncio.sleep(0)
         except Exception as e:
-            LOG.error(f"Capture error at sample {len(samples)}: {e}")
+            LOG.error(f"Capture error at sample {taken}: {e}")
+
+        if progress_ok and pending:
+            await self._send_capture_progress(
+                websocket, capture_id, pending, taken - len(pending))
 
         actual_elapsed = loop.time() - start
-        actual_hz = round(len(samples) / actual_elapsed, 1) if actual_elapsed > 0 else 0
+        actual_hz = round(taken / actual_elapsed, 1) if actual_elapsed > 0 else 0
+        samples = history if history is not None else []
 
         try:
             await websocket.send(json.dumps({
@@ -666,13 +717,48 @@ class CommandHandler:
                 "capture_id": capture_id,
                 "samples": samples,
                 "actual_hz": actual_hz,
-                "total_samples": len(samples)
+                "total_samples": taken
             }))
         except Exception as e:
             LOG.error(f"Failed to send capture results: {e}")
 
         self._capture_task = None
         self._cancel_capture = False
+
+    async def _send_capture_progress(self, websocket, capture_id, rows, offset) -> bool:
+        """Push the samples taken since the last push. False stops further pushes.
+
+        A capture whose socket has gone still has to unwind its own loop and
+        clear the task state, so a failed push is not allowed to end the run --
+        it only stops us retrying into a socket that is not there.
+        """
+        try:
+            await websocket.send(json.dumps({
+                "type": "capture_progress",
+                "capture_id": capture_id,
+                "samples": rows,
+                "offset": offset,
+            }))
+            return True
+        except Exception as e:
+            LOG.debug(f"Capture progress push failed, sending no more: {e}")
+            return False
+
+    async def _handle_set_capture_rate(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
+        """Retune a running capture without restarting it.
+
+        Restarting would drop the trace already on screen and reset the time
+        axis, which is exactly what a scope does not do when you turn the
+        timebase knob.
+        """
+        rate_hz = cmd.get("rate_hz")
+        if not rate_hz or float(rate_hz) <= 0:
+            raise ValueError("'rate_hz' must be greater than zero")
+
+        self._capture_rate_hz = float(rate_hz)
+        running = bool(self._capture_task and not self._capture_task.done())
+        return self._create_success_response({"rate_hz": self._capture_rate_hz,
+                                              "applied": running})
 
     async def _handle_stop_capture(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """Stop an active capture. The capture task will send partial results."""
