@@ -1,6 +1,6 @@
 # MCUHex SDK
 
-MCUHex SDK is the local backend that connects the [MCUHex](https://mcuhex.vercel.app/) web app to physical debug probes. It runs on the developer's machine as a lightweight **WebSocket server** (default `ws://127.0.0.1:8765`) and exposes a single JSON protocol the web app drives to talk to the target MCU.
+MCUHex SDK is the local backend that connects the [MCUHex](https://mcuhex.com/) web app to physical debug probes. It runs on the developer's machine as a lightweight **WebSocket server** (default `ws://127.0.0.1:8765`) and exposes a single JSON protocol the web app drives to talk to the target MCU.
 
 Through that protocol the SDK provides:
 
@@ -185,7 +185,7 @@ These are emitted by the server without a matching request `id`; clients dispatc
 
 ### Error codes
 
-`error_code` values are grouped by category — generic connection (`NO_DEVICES_FOUND`, `DEVICE_BUSY`, `PERMISSION_DENIED`, `CONNECT_TIMEOUT`, `READ_WRITE_FAILED`, …), Cortex-M specific (`CORTEX_M_DEBUG_PORT_LOCKED`, `CORTEX_M_SWD_PROTOCOL_ERROR`, …), flash operations (`FLASH_FILE_NOT_FOUND`, `FLASH_UNSUPPORTED_FORMAT`, `FLASH_VERIFICATION_FAILED`, `CORTEX_M_FLASH_WRITE_PROTECTED`, …), and file browse (`BROWSE_PERMISSION_DENIED`, `BROWSE_INVALID_PATH`). The authoritative list is `ErrorCode` in `server.py`, kept in sync with `ConnectionErrorCode` on the web-app side.
+`error_code` values are grouped by category — generic connection ([`NO_DEVICES_FOUND`](https://mcuhex.com/troubleshooting/no-debug-probe-detected), [`DEVICE_BUSY`](https://mcuhex.com/troubleshooting/device-busy), [`PERMISSION_DENIED`](https://mcuhex.com/troubleshooting/usb-permission-denied), [`CONNECT_TIMEOUT`](https://mcuhex.com/troubleshooting/connect-timeout), [`READ_WRITE_FAILED`](https://mcuhex.com/troubleshooting/memory-read-write-failed), …), Cortex-M specific ([`CORTEX_M_DEBUG_PORT_LOCKED`](https://mcuhex.com/troubleshooting/debug-port-locked), [`CORTEX_M_SWD_PROTOCOL_ERROR`](https://mcuhex.com/troubleshooting/swd-protocol-error), …), flash operations ([`FLASH_FILE_NOT_FOUND`](https://mcuhex.com/troubleshooting/firmware-file-not-found), [`FLASH_UNSUPPORTED_FORMAT`](https://mcuhex.com/troubleshooting/unsupported-firmware-format), [`FLASH_VERIFICATION_FAILED`](https://mcuhex.com/troubleshooting/flash-verification-failed), [`CORTEX_M_FLASH_WRITE_PROTECTED`](https://mcuhex.com/troubleshooting/flash-write-protected), …), and file browse (`BROWSE_PERMISSION_DENIED`, `BROWSE_INVALID_PATH`). The authoritative list is `ErrorCode` in `server.py`, kept in sync with `ConnectionErrorCode` on the web-app side. Every user-facing code has a step-by-step guide in the [MCUHex troubleshooting catalog](https://mcuhex.com/troubleshooting).
 
 ### Data encoding
 
