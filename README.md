@@ -208,4 +208,6 @@ When using `-f` in mock mode, the JSON file defines symbols and initial values:
 
 ## License
 
-All rights reserved. This source is published for reference; no license to use, copy, modify, or distribute is granted.
+Copyright 2026 Ömer Faruk Dak
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text.

@@ -6,6 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "mcuhex-sdk"
 dynamic = ["version"]
 requires-python = ">=3.8"
+license = { text = "Apache-2.0" }
+classifiers = ["License :: OSI Approved :: Apache Software License"]
 
 [tool.setuptools]
 py-modules = ["server"]
