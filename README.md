@@ -30,7 +30,7 @@ The tray app for macOS and Windows is this same server wrapped in a menu-bar
 icon. Running from source gives you everything the tray app does, and it is the
 supported path on Linux, where there is no packaged build.
 
-Requires **Python 3.11+** (the pinned `numpy` needs it).
+Requires **Python 3.9 or newer**. Verified on 3.11, 3.13 and 3.14.
 
 ### 1. Platform prerequisites
 
