@@ -103,9 +103,16 @@ pip install -r requirements.txt
 git clone https://github.com/omrdk/mcuhex-sdk.git
 cd mcuhex-sdk
 py -m venv .venv
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
+
+PowerShell refuses to run the activation script under the default execution
+policy, with *"running scripts is disabled on this system"*. The line above
+lifts that for the current window only — close it and the machine's policy is
+untouched. From `cmd.exe` instead of PowerShell, run `.venv\Scripts\activate.bat`
+and skip that line.
 
 </details>
 
