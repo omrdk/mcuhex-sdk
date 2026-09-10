@@ -9,7 +9,7 @@ Through that protocol the SDK provides:
 - **Firmware flashing** — program `.elf` / `.out` / images with live progress, with CMSIS-Pack discovery and install for target support.
 - **Device & target management** — enumerate attached probes, auto-select the matching driver, and override the target chip.
 
-It connects to **ARM Cortex-M** targets over **SWD** using [PyOCD](https://pyocd.io/). The SDK also ships as a small **tray application** for macOS and Windows that manages the server lifecycle and auto-updates.
+It connects to **ARM Cortex-M** targets over **SWD** using [PyOCD](https://pyocd.io/). The SDK also ships as a small **tray application** for macOS and Windows that manages the server lifecycle and auto-updates. On Linux, and anywhere you would rather run it yourself, see [Run from source](#run-from-source).
 
 ## Connectivity Support
 
@@ -24,15 +24,121 @@ It connects to **ARM Cortex-M** targets over **SWD** using [PyOCD](https://pyocd
 
 <sub>✅ Available now &nbsp;·&nbsp; 🚧 On the roadmap — not yet wired in</sub>
 
-## Installation
+## Run from source
+
+The tray app for macOS and Windows is this same server wrapped in a menu-bar
+icon. Running from source gives you everything the tray app does, and it is the
+supported path on Linux, where there is no packaged build.
+
+Requires **Python 3.11+** (the pinned `numpy` needs it).
+
+### 1. Platform prerequisites
+
+<details open>
+<summary><b>Linux</b> (Debian / Ubuntu)</summary>
 
 ```bash
+sudo apt install python3-venv libusb-1.0-0 libhidapi-hidraw0
+```
+
+USB debug probes are root-only until a udev rule grants your user access.
+Without the rules the probe enumerates but cannot be claimed, and the SDK
+reports `PERMISSION_DENIED`. PyOCD ships rules for every probe it supports:
+
+```bash
+git clone --depth 1 https://github.com/pyocd/pyOCD.git /tmp/pyocd
+sudo cp /tmp/pyocd/udev/*.rules /etc/udev/rules.d/
+sudo udevadm control --reload && sudo udevadm trigger
+```
+
+Unplug and replug the probe afterwards. If you also use the board's virtual COM
+port, add yourself to the serial group and log back in:
+
+```bash
+sudo usermod -aG dialout $USER
+```
+
+</details>
+
+<details>
+<summary><b>macOS</b> (Apple Silicon and Intel)</summary>
+
+No extra system packages. `libusb-package` in `requirements.txt` carries the
+libusb binary, and hidapi ships as a wheel.
+
+</details>
+
+<details>
+<summary><b>Windows</b> (x64)</summary>
+
+No extra system packages: libusb and hidapi both install as wheels.
+
+Driver notes per probe:
+
+- **ST-Link** — install ST's USB driver, [STSW-LINK009](https://www.st.com/en/development-tools/stsw-link009.html). Windows will not enumerate the probe correctly without it.
+- **CMSIS-DAP / DAPLink** — no driver needed, it is a HID device.
+- **J-Link** — install the [SEGGER J-Link software pack](https://www.segger.com/downloads/jlink/), which provides the driver and the DLL `pylink-square` loads.
+
+</details>
+
+### 2. Install
+
+<details open>
+<summary><b>Linux and macOS</b></summary>
+
+```bash
+git clone https://github.com/omrdk/mcuhex-sdk.git
+cd mcuhex-sdk
 python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Requires Python 3.8+.
+</details>
+
+<details>
+<summary><b>Windows</b> (PowerShell)</summary>
+
+```powershell
+git clone https://github.com/omrdk/mcuhex-sdk.git
+cd mcuhex-sdk
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+</details>
+
+### 3. Start the server
+
+Connect your probe over USB, then run the same command on every platform:
+
+```bash
+python server.py --probe PyOCDProbe
+```
+
+Leave the terminal open — this process owns the probe for as long as you are
+working.
+
+### 4. Connect from the browser
+
+Open [mcuhex.com/monitor](https://mcuhex.com/monitor). The web app dials
+`ws://127.0.0.1:8765` by itself, so there is nothing to paste or configure. The
+page is served over HTTPS but the socket is plain `ws://`; browsers allow this
+because loopback counts as a trusted origin.
+
+Keep the default port. The web app has no setting for a different one, so a
+server started with `--port` will not be found. If the browser cannot reach a
+server that is clearly running, bind the loopback address explicitly:
+
+```bash
+python server.py --probe PyOCDProbe --host 127.0.0.1
+```
+
+The server only accepts WebSocket handshakes from an allow-list of origins
+(`desktop/config.py`), so no other site you happen to have open can drive your
+probe. Clients that send no `Origin` header at all — the CLI below, the VS Code
+extension — are also accepted, which no web page can imitate.
 
 ## Quick Start
 
