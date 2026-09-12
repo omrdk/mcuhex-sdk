@@ -72,8 +72,7 @@ No extra system packages: libusb and hidapi both install as wheels.
 
 Driver notes per probe:
 
-- **ST-Link** — install ST's USB driver, [STSW-LINK009](https://www.st.com/en/development-tools/stsw-link009.html). Windows will not enumerate the probe correctly without it.
-- **CMSIS-DAP / DAPLink** — no driver needed, it is a HID device.
+- **ST-Link** — pyOCD reaches it through WinUSB. Before you plug it in, open [Zadig](https://zadig.akeo.ie/), pick the ST-Link (Options → List All Devices if it is hidden), install the WinUSB driver, then replug. Without this the probe never appears in the device list. STM32CubeProgrammer will no longer see the probe afterwards.
 - **J-Link** — install the [SEGGER J-Link software pack](https://www.segger.com/downloads/jlink/), which provides the driver and the DLL `pylink-square` loads.
 
 </details>
