@@ -262,8 +262,8 @@ All communication is JSON over a single WebSocket connection. Every request carr
 | `browse_files` | — | `directory`, `extensions` | `{ directory, parent, entries }` (restricted to `$HOME`) |
 | `flash` | `file_path` | `chip_erase`, `verify`, `no_reset` | `{ msg: "flash_started" }` → async `flash_progress` / `flash_complete` |
 | `cancel_flash` | — | — | `{ msg }` |
-| `search_targets` | — | `query`, `limit` | `{ results: [...], total }` |
-| `install_pack` | `target` | — | `{ msg }` → async progress |
+| `search_targets` | — | `query`, `limit` | `{ results: [...], total, index_error?, packs_reachable? }` → may be preceded by async `pack_progress` |
+| `install_pack` | `target` | — | `{ msg }` → async `pack_progress` / `pack_complete` |
 | `set_target` | `uri` | `target` | `{ msg, uri, target? }` |
 | `get_target_info_ext` | — | — | `{ target_override, overrides, detected?, memory_map }` |
 
@@ -301,7 +301,23 @@ These are emitted by the server without a matching request `id`; clients dispatc
 // flash finished — failure
 { "type": "flash_complete", "flash_id": <id>, "success": false,
   "error_code": "<CODE>", "msg": "<...>" }
+
+// pack index / pack download progress (repeated). Carries `install_id` during
+// an install, `search: true` when a search had to download or complete the
+// index first; phase ∈ "preparing" | "indexing" | "indexed" | "downloading" | "registering"
+{ "type": "pack_progress", "search": true, "phase": "indexing",
+  "msg": "Completing pack index (12 of 224)..." }
+
+// pack install finished
+{ "type": "pack_complete", "install_id": <id>, "success": <bool>, "target": "<name>",
+  "installed": <bool>, "error_code"?: "<CODE>", "msg"?: "<...>" }
 ```
+
+`search_targets` answers from the CMSIS-Pack index. The index is completed
+against the vendor's own list before it is trusted; if descriptors are still
+missing afterwards the results are served with `index_error: "PACK_INDEX_INCOMPLETE"`,
+and an `install_pack` for a part the index lacks fails with the same code
+instead of claiming the part does not exist.
 
 ### Error codes
 

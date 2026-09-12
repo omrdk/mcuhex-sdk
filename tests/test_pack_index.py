@@ -165,6 +165,16 @@ def test_missing_descriptors_are_fetched_and_the_index_rebuilt(tmp_path, web):
     assert descriptor_of(G0, tmp_path).read_bytes() == b"<package>STM32G0xx_DFP</package>"
 
 
+def test_progress_is_reported_before_each_fetch(tmp_path, web):
+    refs = expected_descriptors(PIDX)
+    web({PIDX_URL: PIDX, **{r.descriptor_url: b"<package/>" for r in refs}})
+    seen = []
+
+    complete_index(FakeCache(tmp_path), on_progress=lambda done, total: seen.append((done, total)))
+
+    assert seen == [(0, 3), (1, 3), (2, 3)]
+
+
 def test_a_descriptor_that_will_not_download_is_counted_not_raised(tmp_path, web):
     refs = expected_descriptors(PIDX)
     reachable = [r for r in refs if r != G0]

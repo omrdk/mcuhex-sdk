@@ -20,6 +20,10 @@ The order is the usual one, certainty first:
 Steps 4 and 5 only run once something has already failed, so a working install
 never pays for them. When none of them is certain the code stays generic.
 
+One code is not produced here: PACK_INDEX_INCOMPLETE comes from the server when
+``pack_index.complete_index`` could not fetch every descriptor the vendor index
+lists -- a finished call that came back short, not a failure to classify.
+
 The strings here are sent on the WebSocket as-is and must match ErrorCode in
 server.py and ConnectionErrorCode in the web client.
 """

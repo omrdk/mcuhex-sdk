@@ -32,7 +32,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from typing import Iterable, List
+from typing import Callable, Iterable, List, Optional
 
 LOG = logging.getLogger("pack-index")
 
@@ -125,12 +125,14 @@ def fetch_descriptor(ref: PackRef, data_path: str) -> bool:
     return _fetch(ref.descriptor_url, os.path.join(data_path, ref.descriptor_filename))
 
 
-def complete_index(cache) -> IndexReport:
+def complete_index(cache, on_progress: Optional[Callable[[int, int], None]] = None) -> IndexReport:
     """Fetch the descriptors the library's downloader left out and rebuild.
 
-    ``cache_descriptors`` is only called when at least one file was fetched:
-    the library re-parses every descriptor on disk and rewrites the index, and
-    when nothing changed that work would change nothing.
+    ``on_progress(done, total)`` is called before each fetch so a caller can
+    show how far along a first run is. ``cache_descriptors`` is only called
+    when at least one file was fetched: the library re-parses every descriptor
+    on disk and rewrites the index, and when nothing changed that work would
+    change nothing.
     """
     data_path = cache.data_path
     os.makedirs(data_path, exist_ok=True)
@@ -144,7 +146,11 @@ def complete_index(cache) -> IndexReport:
         return IndexReport(expected=len(refs), missing=0, fetched=0)
 
     LOG.info(f"Pack index is missing {len(missing)} of {len(refs)} descriptors, fetching")
-    fetched = sum(fetch_descriptor(ref, data_path) for ref in missing)
+    fetched = 0
+    for i, ref in enumerate(missing):
+        if on_progress:
+            on_progress(i, len(missing))
+        fetched += fetch_descriptor(ref, data_path)
     if fetched:
         cache.cache_descriptors()
     report = IndexReport(expected=len(refs), missing=len(missing), fetched=fetched)
