@@ -23,6 +23,7 @@ from probe.pack_errors import (
     pack_host_reachable,
 )
 from probe.pack_index import PackRef, complete_index, ensure_pack_file
+from probe import windows_pnp
 
 # OCD/serial drivers (STM32G4, ESP32-C3, TI C2000) are kept out-of-tree for
 # future work; import gracefully so the server still runs when they are absent.
@@ -373,6 +374,25 @@ class CommandHandler:
                 pyocd_uids.add(d['device'])
         except Exception as e:
             LOG.debug(f"PyOCD scan skipped: {e}")
+
+        # A probe Windows has no driver for never reaches libusb, so pyOCD's
+        # scan cannot see it and the list above comes back empty. Windows' own
+        # device tree still has it; listed here as present but unusable, so
+        # the user sees the probe and the reason instead of nothing.
+        for d in windows_pnp.scan():
+            if d["device"] in pyocd_uids:
+                continue
+            all_devices.append({
+                "device": d["device"],
+                "description": d["description"],
+                "manufacturer": None,
+                "family": "ARM Cortex-M",
+                "transport": "swd",
+                "supported": False,
+                "reason": "driver_missing",
+                "vid": d["vid"],
+                "pid": d["pid"],
+            })
 
         # USB serial: all devices with VID/PID (real hardware). Probe classes are
         # split by the transport they speak, and only the SWD one exists today.

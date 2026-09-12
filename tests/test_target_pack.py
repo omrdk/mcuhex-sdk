@@ -572,6 +572,51 @@ def test_an_esp32_without_its_driver_is_not_offered(handler, monkeypatch):
     assert devices[0]["supported"] is False
 
 
+def list_with_driverless(handler, monkeypatch, driverless, probes=()):
+    monkeypatch.setattr(server_mod.windows_pnp, "scan", lambda: driverless)
+    return list_with_serial(handler, monkeypatch, [], probes)
+
+
+DRIVERLESS_DONGLE = {
+    "device": r"USB\VID_0483&PID_3748\A", "description": "STM32 STLink", "vid": 0x0483, "pid": 0x3748,
+}
+
+
+def test_a_probe_windows_has_no_driver_for_is_listed_as_unusable_with_the_reason(handler, monkeypatch):
+    """Invisible to pyOCD, so without this the list is empty and the user learns nothing."""
+    devices = list_with_driverless(handler, monkeypatch, [DRIVERLESS_DONGLE])
+
+    assert devices == [{
+        "device": DRIVERLESS_DONGLE["device"],
+        "description": "STM32 STLink",
+        "manufacturer": None,
+        "family": "ARM Cortex-M",
+        "transport": "swd",
+        "supported": False,
+        "reason": "driver_missing",
+        "vid": 0x0483,
+        "pid": 0x3748,
+    }]
+
+
+def test_a_driverless_probe_cannot_be_connected_to(handler, monkeypatch):
+    list_with_driverless(handler, monkeypatch, [DRIVERLESS_DONGLE])
+
+    resp = send(handler, {"cmd": "connect", "uri": DRIVERLESS_DONGLE["device"]})
+
+    assert resp["status"] != 0
+
+
+def test_once_the_driver_is_bound_the_probe_is_listed_by_pyocd_alone(handler, monkeypatch):
+    """After Zadig the same probe enumerates through libusb; the PnP row must not linger beside it."""
+    devices = list_with_driverless(
+        handler, monkeypatch, [], [FakePyocdProbe("usb://stlink")]
+    )
+
+    assert [(d["device"], d["supported"]) for d in devices] == [("usb://stlink", True)]
+    assert "reason" not in devices[0]
+
+
 def test_connecting_to_a_device_we_cannot_speak_to_says_so(handler, monkeypatch):
     list_with_serial(handler, monkeypatch, [FakeSerialPort("/dev/cu.usbserial-110")])
 
