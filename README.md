@@ -9,7 +9,7 @@ Through that protocol the SDK provides:
 - **Firmware flashing** — program `.elf` / `.out` / images with live progress, with CMSIS-Pack discovery and install for target support.
 - **Device & target management** — enumerate attached probes, auto-select the matching driver, and override the target chip.
 
-It connects to **ARM Cortex-M** targets over **SWD** using [PyOCD](https://pyocd.io/). The SDK also ships as a small **tray application** for macOS and Windows that manages the server lifecycle and auto-updates. On Linux, and anywhere you would rather run it yourself, see [Run from source](#run-from-source).
+It connects to **ARM Cortex-M** targets over **SWD** using [PyOCD](https://pyocd.io/). The SDK also ships as a small **tray application** for macOS and Windows that manages the server lifecycle and auto-updates. Those binaries are built from this repository by the [Release workflow](.github/workflows/release.yml), from the commit the version tag points at, and they are not code-signed, so macOS and Windows warn on first launch. If you would rather not run an unsigned binary, or you are on Linux, see [Run from source](#run-from-source): it is the same code.
 
 ## Connectivity Support
 
