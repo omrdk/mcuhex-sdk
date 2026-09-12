@@ -72,7 +72,11 @@ No extra system packages: libusb and hidapi both install as wheels.
 
 Driver notes per probe:
 
-- **ST-Link** — pyOCD reaches it through WinUSB. Before you plug it in, open [Zadig](https://zadig.akeo.ie/), pick the ST-Link (Options → List All Devices if it is hidden), install the WinUSB driver, then replug. Without this the probe never appears in the device list. STM32CubeProgrammer will no longer see the probe afterwards.
+- **ST-Link** — pyOCD reaches it through WinUSB. If STM32CubeIDE or STM32CubeProgrammer is installed, its driver already binds WinUSB and there is nothing to do. Otherwise plug the probe in and, if it does not appear in the device list, open [Zadig](https://zadig.akeo.ie/). It lists the driverless probe on startup (Options → List All Devices only if it is missing). The name comes from the probe itself: `ST-Link Debug (Interface 0)` for the ST-Link on a Nucleo or Discovery board, `STM32 STLink` for a stand-alone ST-Link V2 dongle; either way the USB ID column starts with 0483. Make sure the arrow points at WinUSB, click Install Driver, then replug. If you later install ST's tools and they stop seeing this probe, reinstall ST's driver package.
+
+  <img src="docs/images/zadig-select-winusb.png" width="575" alt="Zadig with ST-Link Debug (Interface 0) selected, USB ID 0483 374B, and WinUSB as the target driver">
+  <img src="docs/images/zadig-installed.png" width="575" alt="Zadig reporting The driver was installed successfully">
+
 - **J-Link** — install the [SEGGER J-Link software pack](https://www.segger.com/downloads/jlink/), which provides the driver and the DLL `pylink-square` loads.
 
 </details>
