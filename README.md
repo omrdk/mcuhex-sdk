@@ -43,16 +43,13 @@ sudo apt install python3-venv libusb-1.0-0 libhidapi-hidraw0
 
 USB debug probes are root-only until a udev rule grants your user access.
 Without the rules the probe enumerates but cannot be claimed, and the SDK
-reports `PERMISSION_DENIED`. PyOCD ships rules for every probe it supports:
+reports `PERMISSION_DENIED`. The rules ship in this repository's `udev/`
+directory (pyOCD's set: ST-Link, CMSIS-DAP and a few others); step 2 installs
+them once the repository is cloned. J-Link brings its own rule with SEGGER's
+software pack, which it needs on Linux regardless.
 
-```bash
-git clone --depth 1 https://github.com/pyocd/pyOCD.git /tmp/pyocd
-sudo cp /tmp/pyocd/udev/*.rules /etc/udev/rules.d/
-sudo udevadm control --reload && sudo udevadm trigger
-```
-
-Unplug and replug the probe afterwards. If you also use the board's virtual COM
-port, add yourself to the serial group and log back in:
+If you also use the board's virtual COM port, add yourself to the serial group
+and log back in:
 
 ```bash
 sudo usermod -aG dialout $USER
@@ -92,6 +89,13 @@ cd mcuhex-sdk
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+Linux only — install the udev rules, then unplug and replug the probe:
+
+```bash
+sudo cp udev/*.rules /etc/udev/rules.d/
+sudo udevadm control --reload && sudo udevadm trigger
 ```
 
 </details>
