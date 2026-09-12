@@ -599,12 +599,22 @@ def test_a_probe_windows_has_no_driver_for_is_listed_as_unusable_with_the_reason
     }]
 
 
-def test_a_driverless_probe_cannot_be_connected_to(handler, monkeypatch):
+def test_a_driverless_probe_is_refused_for_its_driver_not_its_transport(handler, monkeypatch):
     list_with_driverless(handler, monkeypatch, [DRIVERLESS_DONGLE])
 
     resp = send(handler, {"cmd": "connect", "uri": DRIVERLESS_DONGLE["device"]})
 
     assert resp["status"] != 0
+    assert resp["error_code"] == ErrorCode.PROBE_DRIVER_MISSING
+
+
+def test_the_driverless_refusal_is_forgotten_once_the_probe_enumerates(handler, monkeypatch):
+    list_with_driverless(handler, monkeypatch, [DRIVERLESS_DONGLE])
+    list_with_driverless(handler, monkeypatch, [], [FakePyocdProbe(DRIVERLESS_DONGLE["device"])])
+
+    resp = send(handler, {"cmd": "connect", "uri": DRIVERLESS_DONGLE["device"]})
+
+    assert resp.get("error_code") != ErrorCode.PROBE_DRIVER_MISSING
 
 
 def test_once_the_driver_is_bound_the_probe_is_listed_by_pyocd_alone(handler, monkeypatch):

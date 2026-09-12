@@ -88,6 +88,7 @@ class ErrorCode:
     PROBE_FIRMWARE_TOO_OLD = "PROBE_FIRMWARE_TOO_OLD"
     PROBE_ALREADY_OPEN = "PROBE_ALREADY_OPEN"
     PROBE_TRANSPORT_UNSUPPORTED = "PROBE_TRANSPORT_UNSUPPORTED"
+    PROBE_DRIVER_MISSING = "PROBE_DRIVER_MISSING"
     READ_WRITE_FAILED = "READ_WRITE_FAILED"
     UNKNOWN = "UNKNOWN_CONNECTION_ERROR"
 
@@ -170,6 +171,7 @@ class CommandHandler:
         self._device_probe_map: Dict[str, str] = {}
         # Devices the last scan saw but has no transport driver for.
         self._unsupported_devices: set = set()
+        self._driverless_devices: set = set()
         # Device ids from the last scan, whoever asked for it; None until the
         # first one, so the watcher can tell "nothing plugged" from "not yet
         # looked" and does not announce a change that never happened.
@@ -423,6 +425,9 @@ class CommandHandler:
         self._unsupported_devices = {
             d['device'] for d in all_devices if not d.get('supported', True)
         }
+        self._driverless_devices = {
+            d['device'] for d in all_devices if d.get('reason') == 'driver_missing'
+        }
         self._known_devices = tuple(sorted(d['device'] for d in all_devices))
         return all_devices
 
@@ -435,6 +440,13 @@ class CommandHandler:
         # Only a device the last scan saw and could not place is refused here.
         # A uri we have never scanned is not evidence of anything, and rejecting
         # it would break a client that connects without listing first.
+        if uri in self._driverless_devices:
+            # A probe, not a foreign device: the transport is right and only
+            # the OS driver is missing, which is a different fix entirely.
+            raise ProbeError(
+                f"Windows has no driver bound to {uri}",
+                ErrorCode.PROBE_DRIVER_MISSING,
+            )
         if uri in self._unsupported_devices:
             raise ProbeError(
                 f"No transport driver for {uri}",

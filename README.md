@@ -247,7 +247,7 @@ All communication is JSON over a single WebSocket connection. Every request carr
 
 | Command | Required args | Optional args | Success payload |
 | :--- | :--- | :--- | :--- |
-| `list_devices` | — | — | `{ devices: [...] }` (+ `demo`, `demo_registers` in demo mode). Each device carries `transport` and `supported`; a device that is present but cannot be used also carries `reason` (`driver_missing`: on Windows the probe has no WinUSB driver bound, see the Windows notes under [Platform prerequisites](#1-platform-prerequisites)) |
+| `list_devices` | — | — | `{ devices: [...] }` (+ `demo`, `demo_registers` in demo mode). Each device carries `transport` and `supported`; a device that is present but cannot be used also carries `reason` (`driver_missing`: on Windows the probe has no WinUSB driver bound, see the Windows notes under [Platform prerequisites](#1-platform-prerequisites)); connecting to it fails with `PROBE_DRIVER_MISSING` |
 | `list_probes` | — | — | `{ probes: [...], active_probe }` |
 | `set_probe` | `probe_name` | — | `{ msg }` |
 | `enter_demo` | — | — | `{ demo: true, ... }` |
