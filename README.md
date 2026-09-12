@@ -9,7 +9,7 @@ Through that protocol the SDK provides:
 - **Firmware flashing** — program `.elf` / `.out` / images with live progress, with CMSIS-Pack discovery and install for target support.
 - **Device & target management** — enumerate attached probes, auto-select the matching driver, and override the target chip.
 
-It connects to **ARM Cortex-M** targets over **SWD** using [PyOCD](https://pyocd.io/). The SDK also ships as a small **tray application** for macOS and Windows that manages the server lifecycle and auto-updates.
+It connects to **ARM Cortex-M** targets over **SWD** using [PyOCD](https://pyocd.io/). The SDK also ships as a small **tray application** for macOS and Windows that manages the server lifecycle and auto-updates. On Linux, and anywhere you would rather run it yourself, see [Run from source](#run-from-source).
 
 ## Connectivity Support
 
@@ -24,15 +24,135 @@ It connects to **ARM Cortex-M** targets over **SWD** using [PyOCD](https://pyocd
 
 <sub>✅ Available now &nbsp;·&nbsp; 🚧 On the roadmap — not yet wired in</sub>
 
-## Installation
+## Run from source
+
+The tray app for macOS and Windows is this same server wrapped in a menu-bar
+icon. Running from source gives you everything the tray app does, and it is the
+supported path on Linux, where there is no packaged build.
+
+Requires **Python 3.9 or newer**. Verified on 3.11, 3.13 and 3.14.
+
+### 1. Platform prerequisites
+
+<details open>
+<summary><b>Linux</b> (Debian / Ubuntu)</summary>
 
 ```bash
+sudo apt install python3-venv libusb-1.0-0 libhidapi-hidraw0
+```
+
+USB debug probes are root-only until a udev rule grants your user access.
+Without the rules the probe enumerates but cannot be claimed, and the SDK
+reports `PERMISSION_DENIED`. The rules ship in this repository's `udev/`
+directory (pyOCD's set: ST-Link, CMSIS-DAP and a few others); step 2 installs
+them once the repository is cloned. J-Link brings its own rule with SEGGER's
+software pack, which it needs on Linux regardless.
+
+If you also use the board's virtual COM port, add yourself to the serial group
+and log back in:
+
+```bash
+sudo usermod -aG dialout $USER
+```
+
+</details>
+
+<details>
+<summary><b>macOS</b> (Apple Silicon and Intel)</summary>
+
+No extra system packages. `libusb-package` in `requirements.txt` carries the
+libusb binary, and hidapi ships as a wheel.
+
+</details>
+
+<details>
+<summary><b>Windows</b> (x64)</summary>
+
+No extra system packages: libusb and hidapi both install as wheels.
+
+Driver notes per probe:
+
+- **ST-Link** — pyOCD reaches it through WinUSB. If STM32CubeIDE or STM32CubeProgrammer is installed, its driver already binds WinUSB and there is nothing to do. Otherwise plug the probe in and, if it does not appear in the device list, open [Zadig](https://zadig.akeo.ie/). It lists the driverless probe on startup (Options → List All Devices only if it is missing). The name comes from the probe itself: `ST-Link Debug (Interface 0)` for the ST-Link on a Nucleo or Discovery board, `STM32 STLink` for a stand-alone ST-Link V2 dongle; either way the USB ID column starts with 0483. Make sure the arrow points at WinUSB, click Install Driver, then replug. If you later install ST's tools and they stop seeing this probe, reinstall ST's driver package.
+
+  <img src="docs/images/zadig-select-winusb.png" width="575" alt="Zadig with ST-Link Debug (Interface 0) selected, USB ID 0483 374B, and WinUSB as the target driver">
+  <img src="docs/images/zadig-installed.png" width="575" alt="Zadig reporting The driver was installed successfully">
+
+- **J-Link** — install the [SEGGER J-Link software pack](https://www.segger.com/downloads/jlink/), which provides the driver and the DLL `pylink-square` loads.
+
+</details>
+
+### 2. Install
+
+<details open>
+<summary><b>Linux and macOS</b></summary>
+
+```bash
+git clone https://github.com/omrdk/mcuhex-sdk.git
+cd mcuhex-sdk
 python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Requires Python 3.8+.
+Linux only — install the udev rules, then unplug and replug the probe:
+
+```bash
+sudo cp udev/*.rules /etc/udev/rules.d/
+sudo udevadm control --reload && sudo udevadm trigger
+```
+
+</details>
+
+<details>
+<summary><b>Windows</b> (PowerShell)</summary>
+
+```powershell
+git clone https://github.com/omrdk/mcuhex-sdk.git
+cd mcuhex-sdk
+py -m venv .venv
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+PowerShell refuses to run the activation script under the default execution
+policy, with *"running scripts is disabled on this system"*. The line above
+lifts that for the current window only — close it and the machine's policy is
+untouched. From `cmd.exe` instead of PowerShell, run `.venv\Scripts\activate.bat`
+and skip that line.
+
+</details>
+
+### 3. Start the server
+
+Connect your probe over USB, then run the same command on every platform:
+
+```bash
+python server.py --probe PyOCDProbe
+```
+
+Leave the terminal open — this process owns the probe for as long as you are
+working.
+
+### 4. Connect from the browser
+
+Open [mcuhex.com/monitor](https://mcuhex.com/monitor). The web app dials
+`ws://127.0.0.1:8765` by itself, so there is nothing to paste or configure. The
+page is served over HTTPS but the socket is plain `ws://`; browsers allow this
+because loopback counts as a trusted origin.
+
+Keep the default port. The web app has no setting for a different one, so a
+server started with `--port` will not be found. If the browser cannot reach a
+server that is clearly running, bind the loopback address explicitly:
+
+```bash
+python server.py --probe PyOCDProbe --host 127.0.0.1
+```
+
+The server only accepts WebSocket handshakes from an allow-list of origins
+(`desktop/config.py`), so no other site you happen to have open can drive your
+probe. Clients that send no `Origin` header at all — the CLI below, the VS Code
+extension — are also accepted, which no web page can imitate.
 
 ## Quick Start
 
@@ -127,7 +247,7 @@ All communication is JSON over a single WebSocket connection. Every request carr
 
 | Command | Required args | Optional args | Success payload |
 | :--- | :--- | :--- | :--- |
-| `list_devices` | — | — | `{ devices: [...] }` (+ `demo`, `demo_registers` in demo mode) |
+| `list_devices` | — | — | `{ devices: [...] }` (+ `demo`, `demo_registers` in demo mode). Each device carries `transport` and `supported`; a device that is present but cannot be used also carries `reason` (`driver_missing`: on Windows the probe has no WinUSB driver bound, see the Windows notes under [Platform prerequisites](#1-platform-prerequisites)); connecting to it fails with `PROBE_DRIVER_MISSING` |
 | `list_probes` | — | — | `{ probes: [...], active_probe }` |
 | `set_probe` | `probe_name` | — | `{ msg }` |
 | `enter_demo` | — | — | `{ demo: true, ... }` |
@@ -142,8 +262,8 @@ All communication is JSON over a single WebSocket connection. Every request carr
 | `browse_files` | — | `directory`, `extensions` | `{ directory, parent, entries }` (restricted to `$HOME`) |
 | `flash` | `file_path` | `chip_erase`, `verify`, `no_reset` | `{ msg: "flash_started" }` → async `flash_progress` / `flash_complete` |
 | `cancel_flash` | — | — | `{ msg }` |
-| `search_targets` | — | `query`, `limit` | `{ results: [...], total }` |
-| `install_pack` | `target` | — | `{ msg }` → async progress |
+| `search_targets` | — | `query`, `limit` | `{ results: [...], total, index_error?, packs_reachable? }` → may be preceded by async `pack_progress` |
+| `install_pack` | `target` | — | `{ msg }` → async `pack_progress` / `pack_complete` |
 | `set_target` | `uri` | `target` | `{ msg, uri, target? }` |
 | `get_target_info_ext` | — | — | `{ target_override, overrides, detected?, memory_map }` |
 
@@ -181,7 +301,23 @@ These are emitted by the server without a matching request `id`; clients dispatc
 // flash finished — failure
 { "type": "flash_complete", "flash_id": <id>, "success": false,
   "error_code": "<CODE>", "msg": "<...>" }
+
+// pack index / pack download progress (repeated). Carries `install_id` during
+// an install, `search: true` when a search had to download or complete the
+// index first; phase ∈ "preparing" | "indexing" | "indexed" | "downloading" | "registering"
+{ "type": "pack_progress", "search": true, "phase": "indexing",
+  "msg": "Completing pack index (12 of 224)..." }
+
+// pack install finished
+{ "type": "pack_complete", "install_id": <id>, "success": <bool>, "target": "<name>",
+  "installed": <bool>, "error_code"?: "<CODE>", "msg"?: "<...>" }
 ```
+
+`search_targets` answers from the CMSIS-Pack index. The index is completed
+against the vendor's own list before it is trusted; if descriptors are still
+missing afterwards the results are served with `index_error: "PACK_INDEX_INCOMPLETE"`,
+and an `install_pack` for a part the index lacks fails with the same code
+instead of claiming the part does not exist.
 
 ### Error codes
 

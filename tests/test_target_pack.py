@@ -14,6 +14,7 @@ from pyocd.target.pack import pack_target
 
 import server as server_mod
 from probe import pack_errors
+from probe.pack_index import IndexReport, PackRef
 from server import CommandHandler, ErrorCode
 
 
@@ -24,6 +25,20 @@ def pack_host_answers(monkeypatch):
     monkeypatch.setattr(pack_errors, "pack_host_reachable", lambda: True)
     monkeypatch.setattr(pack_errors, "internet_reachable", lambda: True)
     monkeypatch.setattr(server_mod, "pack_host_reachable", lambda: True)
+
+
+@pytest.fixture(autouse=True)
+def index_is_complete(monkeypatch):
+    """Completing the index fetches the vendor index; the suite must not.
+    Returns the list of calls so a test can see when it ran."""
+    calls = []
+
+    def complete(cache, on_progress=None):
+        calls.append(cache)
+        return IndexReport(expected=1, missing=0, fetched=0)
+
+    monkeypatch.setattr(server_mod, "complete_index", complete)
+    return calls
 
 
 class StubProbe:
@@ -275,6 +290,111 @@ def test_cancel_without_active_install_is_harmless(handler):
     assert resp["msg"] == "no_active_pack_install"
 
 
+# --- Completing the index ---
+
+
+def incomplete(monkeypatch, calls):
+    def complete(cache, on_progress=None):
+        calls.append(cache)
+        if on_progress:
+            on_progress(0, 2)
+        return IndexReport(expected=3, missing=2, fetched=1)
+
+    monkeypatch.setattr(server_mod, "complete_index", complete)
+
+
+def test_search_completes_a_non_empty_index_before_trusting_it(handler, index_is_complete):
+    resp = send(handler, {"cmd": "search_targets", "query": PART.lower()})
+
+    assert resp["status"] == 0
+    assert index_is_complete == [handler._pack_cache]
+    assert "index_error" not in resp
+
+
+def test_an_index_that_could_not_be_completed_is_named_beside_its_results(handler, monkeypatch, index_is_complete):
+    incomplete(monkeypatch, index_is_complete)
+
+    resp = send(handler, {"cmd": "search_targets", "query": PART.lower()})
+
+    assert resp["status"] == 0
+    assert resp["index_error"] == ErrorCode.PACK_INDEX_INCOMPLETE
+    assert resp["results"][0]["name"] == PART
+
+
+def test_a_complete_index_is_checked_once_per_process(handler, index_is_complete):
+    send(handler, {"cmd": "search_targets", "query": PART.lower()})
+    send(handler, {"cmd": "search_targets", "query": PART.lower()[:-1]})
+
+    assert len(index_is_complete) == 1
+
+
+def test_an_incomplete_index_is_retried_only_after_the_reachability_window(handler, monkeypatch, index_is_complete):
+    incomplete(monkeypatch, index_is_complete)
+    send(handler, {"cmd": "search_targets", "query": PART.lower()})
+    send(handler, {"cmd": "search_targets", "query": PART.lower()})
+    assert len(index_is_complete) == 1
+
+    handler._index_checked_at -= server_mod.REACHABILITY_TTL_S + 1
+    send(handler, {"cmd": "search_targets", "query": PART.lower()})
+
+    assert len(index_is_complete) == 2
+
+
+def test_an_empty_index_is_downloaded_then_completed(handler, index_is_complete):
+    class DownloadingCache(FakeCache):
+        def cache_descriptors(self):
+            self.index = {PART: {"name": PART}}
+
+    handler._pack_cache = DownloadingCache(index={})
+
+    resp = send(handler, {"cmd": "search_targets", "query": PART.lower()})
+
+    assert resp["results"][0]["name"] == PART
+    assert index_is_complete == [handler._pack_cache]
+
+
+def test_the_search_reports_what_the_index_work_is_doing(handler, monkeypatch, index_is_complete):
+    incomplete(monkeypatch, index_is_complete)
+
+    send(handler, {"cmd": "search_targets", "query": PART.lower()})
+
+    progress = [m for m in handler._websocket.messages if m["type"] == "pack_progress"]
+    assert all(m["search"] is True for m in progress)
+    assert [(m["phase"], m["msg"]) for m in progress] == [
+        ("indexing", "Completing pack index (0 of 2)..."),
+        ("indexed", "Pack index ready"),
+    ]
+
+
+def test_a_search_that_needed_no_index_work_says_nothing(handler):
+    send(handler, {"cmd": "search_targets", "query": PART.lower()})
+
+    assert [m for m in handler._websocket.messages if m["type"] == "pack_progress"] == []
+
+
+def test_install_blames_the_incomplete_index_not_the_part(handler, monkeypatch, index_is_complete):
+    incomplete(monkeypatch, index_is_complete)
+
+    done = run(install_and_wait(handler, "STM32NOTREAL"))
+
+    assert done["success"] is False
+    assert done["error_code"] == ErrorCode.PACK_INDEX_INCOMPLETE
+
+
+def test_install_fetches_the_pack_file_the_downloader_left_out(handler, monkeypatch):
+    entry = {"name": PART, "from_pack": {
+        "vendor": "Keil", "pack": "STM32F1xx_DFP", "version": "2.4.1", "url": "https://www.keil.com/pack/"}}
+    handler._pack_cache = FakeCache(index={PART: entry})
+    set_installed(monkeypatch, [PART])
+    asked = []
+    monkeypatch.setattr(server_mod, "ensure_pack_file", lambda cache, ref: asked.append(ref) or True)
+
+    done = run(install_and_wait(handler, PART))
+
+    assert done["success"] is True
+    assert asked == [PackRef("Keil", "STM32F1xx_DFP", "2.4.1", "https://www.keil.com/pack/")]
+
+
 # --- Device listing ---
 
 
@@ -450,6 +570,61 @@ def test_an_esp32_without_its_driver_is_not_offered(handler, monkeypatch):
     )
 
     assert devices[0]["supported"] is False
+
+
+def list_with_driverless(handler, monkeypatch, driverless, probes=()):
+    monkeypatch.setattr(server_mod.windows_pnp, "scan", lambda: driverless)
+    return list_with_serial(handler, monkeypatch, [], probes)
+
+
+DRIVERLESS_DONGLE = {
+    "device": r"USB\VID_0483&PID_3748\A", "description": "STM32 STLink", "vid": 0x0483, "pid": 0x3748,
+}
+
+
+def test_a_probe_windows_has_no_driver_for_is_listed_as_unusable_with_the_reason(handler, monkeypatch):
+    """Invisible to pyOCD, so without this the list is empty and the user learns nothing."""
+    devices = list_with_driverless(handler, monkeypatch, [DRIVERLESS_DONGLE])
+
+    assert devices == [{
+        "device": DRIVERLESS_DONGLE["device"],
+        "description": "STM32 STLink",
+        "manufacturer": None,
+        "family": "ARM Cortex-M",
+        "transport": "swd",
+        "supported": False,
+        "reason": "driver_missing",
+        "vid": 0x0483,
+        "pid": 0x3748,
+    }]
+
+
+def test_a_driverless_probe_is_refused_for_its_driver_not_its_transport(handler, monkeypatch):
+    list_with_driverless(handler, monkeypatch, [DRIVERLESS_DONGLE])
+
+    resp = send(handler, {"cmd": "connect", "uri": DRIVERLESS_DONGLE["device"]})
+
+    assert resp["status"] != 0
+    assert resp["error_code"] == ErrorCode.PROBE_DRIVER_MISSING
+
+
+def test_the_driverless_refusal_is_forgotten_once_the_probe_enumerates(handler, monkeypatch):
+    list_with_driverless(handler, monkeypatch, [DRIVERLESS_DONGLE])
+    list_with_driverless(handler, monkeypatch, [], [FakePyocdProbe(DRIVERLESS_DONGLE["device"])])
+
+    resp = send(handler, {"cmd": "connect", "uri": DRIVERLESS_DONGLE["device"]})
+
+    assert resp.get("error_code") != ErrorCode.PROBE_DRIVER_MISSING
+
+
+def test_once_the_driver_is_bound_the_probe_is_listed_by_pyocd_alone(handler, monkeypatch):
+    """After Zadig the same probe enumerates through libusb; the PnP row must not linger beside it."""
+    devices = list_with_driverless(
+        handler, monkeypatch, [], [FakePyocdProbe("usb://stlink")]
+    )
+
+    assert [(d["device"], d["supported"]) for d in devices] == [("usb://stlink", True)]
+    assert "reason" not in devices[0]
 
 
 def test_connecting_to_a_device_we_cannot_speak_to_says_so(handler, monkeypatch):

@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import server as server_mod
 from probe import pack_errors
+from probe.pack_index import IndexReport
 from server import CommandHandler, ErrorCode
 
 
@@ -19,6 +20,20 @@ def pack_host_answers(monkeypatch):
     monkeypatch.setattr(pack_errors, "pack_host_reachable", lambda: True)
     monkeypatch.setattr(pack_errors, "internet_reachable", lambda: True)
     monkeypatch.setattr(server_mod, "pack_host_reachable", lambda: True)
+
+
+@pytest.fixture(autouse=True)
+def index_is_complete(monkeypatch):
+    """Completing the index fetches the vendor index; the suite must not.
+    Returns the list of calls so a test can see when it ran."""
+    calls = []
+
+    def complete(cache, on_progress=None):
+        calls.append(cache)
+        return IndexReport(expected=1, missing=0, fetched=0)
+
+    monkeypatch.setattr(server_mod, "complete_index", complete)
+    return calls
 
 
 def flash_and_ram(flash_size, ram_size):

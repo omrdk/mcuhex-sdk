@@ -25,7 +25,7 @@ _local_modules = collect_submodules('probe') + ['server']
 # ---------------------------------------------------------------------------
 # Only add hiddenimports for packages that are actually installed.
 # Prior builds crashed because PyInstaller's hooks tried to process
-# modules (numpy, aioserial, cmsis_pack_manager) that weren't present
+# modules (numpy, cmsis_pack_manager) that weren't present
 # or whose hook was incompatible with the installed version.
 # ---------------------------------------------------------------------------
 def _module_exists(name):
@@ -49,7 +49,7 @@ def _safe_collect(name):
 _serial_modules = _safe_collect('serial')
 
 _optional_hidden = []
-for _mod in ['aioserial', 'cmsis_pack_manager', 'importlib_metadata']:
+for _mod in ['cmsis_pack_manager', 'importlib_metadata']:
     if _module_exists(_mod):
         _optional_hidden.append(_mod)
     else:
@@ -110,9 +110,9 @@ a = Analysis(
         'tkinter',
         'matplotlib',
         'scipy',
-        'numpy',           # built-in hook needs _PyInstaller_hooks_0_numpy which is often
-                            # missing or version-incompatible; only used by DummyProbe
-                            # (demo waveforms) — real probes don't need it
+        'numpy',           # not a dependency, but stays excluded so a developer who has
+                            # it in their environment cannot pull it in: the built-in hook
+                            # needs _PyInstaller_hooks_0_numpy, which is often missing
         'PIL.ImageTk',
         'test',
         'unittest',

@@ -22,6 +22,8 @@ from probe.pack_errors import (
     classify_silent_failure,
     pack_host_reachable,
 )
+from probe.pack_index import PackRef, complete_index, ensure_pack_file
+from probe import windows_pnp
 
 # OCD/serial drivers (STM32G4, ESP32-C3, TI C2000) are kept out-of-tree for
 # future work; import gracefully so the server still runs when they are absent.
@@ -86,6 +88,7 @@ class ErrorCode:
     PROBE_FIRMWARE_TOO_OLD = "PROBE_FIRMWARE_TOO_OLD"
     PROBE_ALREADY_OPEN = "PROBE_ALREADY_OPEN"
     PROBE_TRANSPORT_UNSUPPORTED = "PROBE_TRANSPORT_UNSUPPORTED"
+    PROBE_DRIVER_MISSING = "PROBE_DRIVER_MISSING"
     READ_WRITE_FAILED = "READ_WRITE_FAILED"
     UNKNOWN = "UNKNOWN_CONNECTION_ERROR"
 
@@ -123,6 +126,7 @@ class ErrorCode:
     PACK_DISK_FULL = "PACK_DISK_FULL"
     PACK_CACHE_UNWRITABLE = "PACK_CACHE_UNWRITABLE"
     PACK_MANAGER_UNAVAILABLE = "PACK_MANAGER_UNAVAILABLE"
+    PACK_INDEX_INCOMPLETE = "PACK_INDEX_INCOMPLETE"
 
     # TI C2000 family (Kolbus/XDS protocol) -- placeholders for future
     # TI_C2X_...
@@ -167,6 +171,7 @@ class CommandHandler:
         self._device_probe_map: Dict[str, str] = {}
         # Devices the last scan saw but has no transport driver for.
         self._unsupported_devices: set = set()
+        self._driverless_devices: set = set()
         # Device ids from the last scan, whoever asked for it; None until the
         # first one, so the watcher can tell "nothing plugged" from "not yet
         # looked" and does not announce a change that never happened.
@@ -179,6 +184,10 @@ class CommandHandler:
         self._pack_cache = None  # lazy-loaded cmsis_pack_manager.Cache
         self._reachable: Optional[bool] = None
         self._reachable_at: float = 0.0
+        # Set once the index has been completed in this process; an incomplete
+        # result is retried, but not on every keystroke.
+        self._index_complete = False
+        self._index_checked_at: float = 0.0
         self._builtin_target_cache: Optional[Dict[str, Dict[str, Any]]] = None
         self._setup_command_handlers()
 
@@ -201,7 +210,7 @@ class CommandHandler:
             'set_capture_rate': (self._handle_set_capture_rate, 1, True),
             'flash': (self._handle_flash, 1, True),
             'cancel_flash': (self._handle_cancel_flash, 0, True),
-            'search_targets': (self._handle_search_targets, 0, False),
+            'search_targets': (self._handle_search_targets, 0, True),
             'install_pack': (self._handle_install_pack, 1, True),
             'cancel_pack': (self._handle_cancel_pack, 0, True),
             'set_target': (self._handle_set_target, 1, False),
@@ -368,6 +377,25 @@ class CommandHandler:
         except Exception as e:
             LOG.debug(f"PyOCD scan skipped: {e}")
 
+        # A probe Windows has no driver for never reaches libusb, so pyOCD's
+        # scan cannot see it and the list above comes back empty. Windows' own
+        # device tree still has it; listed here as present but unusable, so
+        # the user sees the probe and the reason instead of nothing.
+        for d in windows_pnp.scan():
+            if d["device"] in pyocd_uids:
+                continue
+            all_devices.append({
+                "device": d["device"],
+                "description": d["description"],
+                "manufacturer": None,
+                "family": "ARM Cortex-M",
+                "transport": "swd",
+                "supported": False,
+                "reason": "driver_missing",
+                "vid": d["vid"],
+                "pid": d["pid"],
+            })
+
         # USB serial: all devices with VID/PID (real hardware). Probe classes are
         # split by the transport they speak, and only the SWD one exists today.
         # These stay in the list marked unsupported rather than being dropped:
@@ -397,6 +425,9 @@ class CommandHandler:
         self._unsupported_devices = {
             d['device'] for d in all_devices if not d.get('supported', True)
         }
+        self._driverless_devices = {
+            d['device'] for d in all_devices if d.get('reason') == 'driver_missing'
+        }
         self._known_devices = tuple(sorted(d['device'] for d in all_devices))
         return all_devices
 
@@ -409,6 +440,13 @@ class CommandHandler:
         # Only a device the last scan saw and could not place is refused here.
         # A uri we have never scanned is not evidence of anything, and rejecting
         # it would break a client that connects without listing first.
+        if uri in self._driverless_devices:
+            # A probe, not a foreign device: the transport is right and only
+            # the OS driver is missing, which is a different fix entirely.
+            raise ProbeError(
+                f"Windows has no driver bound to {uri}",
+                ErrorCode.PROBE_DRIVER_MISSING,
+            )
         if uri in self._unsupported_devices:
             raise ProbeError(
                 f"No transport driver for {uri}",
@@ -1397,7 +1435,86 @@ class CommandHandler:
             return "none"
         return None
 
-    def _handle_search_targets(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
+    def _pack_progress_sender(self, ident: Dict[str, Any]):
+        """A progress(phase, msg) callable that sends pack_progress from any
+        thread; the loop is captured here because a worker thread has none."""
+        websocket = self._websocket
+        loop = asyncio.get_event_loop()
+
+        def progress(phase: str, msg: str) -> None:
+            if websocket is None:
+                return
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    websocket.send(json.dumps({"type": "pack_progress", **ident, "phase": phase, "msg": msg})),
+                    loop,
+                )
+            except Exception as e:
+                LOG.error(f"Pack push failed: {e}")
+        return progress
+
+    async def _run_with_heartbeat(self, fn, on_tick):
+        """Run blocking pack work off the loop, calling on_tick(elapsed_s) every
+        PACK_HEARTBEAT_SECS. Pack downloads can run for minutes with no
+        observable progress; the ticks let the client tell "slow" from "dead"."""
+        future = asyncio.get_event_loop().run_in_executor(None, fn)
+        started = time.monotonic()
+        while True:
+            done, _ = await asyncio.wait({future}, timeout=PACK_HEARTBEAT_SECS)
+            if done:
+                return future.result()
+            on_tick(int(time.monotonic() - started))
+
+    async def _ensure_index(self, cache, ident: Dict[str, Any]) -> bool:
+        """Bring the descriptor index to what the vendor index says it should be.
+
+        Returns whether it is complete. The library's downloader can return an
+        index that is non-empty yet missing whole vendors, so "there is an
+        index" is never taken as "the index is whole"; what it left out is
+        fetched here, once per process while it succeeds and once per
+        REACHABILITY_TTL_S while it does not.
+        """
+        progress = self._pack_progress_sender(ident)
+        told = False
+
+        async def done_telling():
+            # Awaited rather than scheduled so it reaches the client before the
+            # response that follows it.
+            if told and self._websocket is not None:
+                await self._websocket.send(json.dumps(
+                    {"type": "pack_progress", **ident, "phase": "indexed", "msg": "Pack index ready"}))
+
+        if not cache.index:
+            told = True
+            progress("indexing", "Downloading pack index...")
+            await self._run_with_heartbeat(
+                cache.cache_descriptors,
+                lambda s: progress("indexing", f"Downloading pack index... ({s}s)"),
+            )
+
+        now = time.monotonic()
+        if self._index_complete or now - self._index_checked_at < REACHABILITY_TTL_S:
+            await done_telling()
+            return self._index_complete
+        self._index_checked_at = now
+
+        def completing(done, total):
+            nonlocal told
+            told = True
+            progress("indexing", f"Completing pack index ({done} of {total})...")
+
+        def tick(s):
+            # Once fetching has begun, a long silence is the library re-parsing
+            # every descriptor on disk, not the check that came before it.
+            what = "Rebuilding" if told else "Checking"
+            progress("indexing", f"{what} pack index... ({s}s)")
+
+        report = await self._run_with_heartbeat(lambda: complete_index(cache, completing), tick)
+        self._index_complete = report.complete
+        await done_telling()
+        return report.complete
+
+    async def _handle_search_targets(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
         """Search the CMSIS-Pack index for targets matching a query string."""
         query = (cmd.get("query") or "").strip().lower()
         limit = int(cmd.get("limit", 30))
@@ -1414,14 +1531,16 @@ class CommandHandler:
             LOG.warning(f"Pack manager unavailable: {e}")
             index_error = classify_pack_failure(e)
 
-        index = (cache.index if cache else None) or {}
-        if cache is not None and not index:
-            # Fetch the descriptor list once so future searches work
+        index = {}
+        if cache is not None:
             try:
-                cache.cache_descriptors()
+                complete = await self._ensure_index(cache, {"search": True})
                 index = cache.index or {}
+                if not complete:
+                    index_error = ErrorCode.PACK_INDEX_INCOMPLETE
             except Exception as e:
                 LOG.warning(f"Descriptor download failed: {e}")
+                index = cache.index or {}
                 index_error = classify_pack_failure(e, getattr(cache, "data_path", None))
 
         installed = self._get_installed_target_names()
@@ -1559,43 +1678,16 @@ class CommandHandler:
     async def _run_install_pack(self, websocket, target, install_id):
         """Background pack install. Emits pack_progress + pack_complete push messages."""
         loop = asyncio.get_event_loop()
+        ident = {"install_id": install_id}
+        progress = self._pack_progress_sender(ident)
 
-        def push(payload):
-            try:
-                asyncio.run_coroutine_threadsafe(
-                    websocket.send(json.dumps(payload)), loop
-                )
-            except Exception as e:
-                LOG.error(f"Pack push failed: {e}")
-
-        async def run_with_heartbeat(fn, phase, msg):
-            # Pack downloads can run for minutes with no observable progress;
-            # keep pushing so the client can tell "slow" from "dead".
-            future = loop.run_in_executor(None, fn)
-            started = time.monotonic()
-            while True:
-                done, _ = await asyncio.wait({future}, timeout=PACK_HEARTBEAT_SECS)
-                if done:
-                    return future.result()
-                push({"type": "pack_progress", "install_id": install_id,
-                      "phase": phase,
-                      "msg": f"{msg} ({int(time.monotonic() - started)}s)"})
-
-        push({"type": "pack_progress", "install_id": install_id,
-              "phase": "preparing", "msg": "Checking index..."})
+        progress("preparing", "Checking index...")
 
         cache = None
         try:
             cache = self._get_pack_cache()
 
-            # Ensure we have a fresh descriptor index
-            def ensure_index():
-                if not cache.index:
-                    push({"type": "pack_progress", "install_id": install_id,
-                          "phase": "indexing", "msg": "Downloading pack index..."})
-                    cache.cache_descriptors()
-
-            await run_with_heartbeat(ensure_index, "indexing", "Downloading pack index...")
+            complete = await self._ensure_index(cache, ident)
 
             index = cache.index or {}
             if target not in index:
@@ -1603,28 +1695,37 @@ class CommandHandler:
                 matches = [k for k in index.keys() if k.lower() == target.lower()]
                 if matches:
                     target = matches[0]
+                elif not complete:
+                    # The part may well exist; the index that would list it
+                    # could not be finished, and that is the thing to report.
+                    raise ProbeError(
+                        f"Target '{target}' not found, and the CMSIS-Pack index is incomplete",
+                        ErrorCode.PACK_INDEX_INCOMPLETE,
+                    )
                 else:
                     raise ProbeError(
                         f"Target '{target}' not found in CMSIS-Pack index",
                         ErrorCode.CORTEX_M_UNSUPPORTED_TARGET,
                     )
 
-            push({"type": "pack_progress", "install_id": install_id,
-                  "phase": "downloading",
-                  "msg": f"Downloading pack for {target}..."})
+            progress("downloading", f"Downloading pack for {target}...")
 
             def do_install():
                 # packs_for_devices only resolves which packs cover the device;
-                # download_pack_list is what actually fetches them.
+                # download_pack_list is what actually fetches them. The same
+                # downloader that drops descriptors serves the packs, so the
+                # file is checked for afterwards and fetched directly if absent.
                 cache.download_pack_list(cache.packs_for_devices([index[target]]))
+                if "from_pack" in index[target]:
+                    if not ensure_pack_file(cache, PackRef.from_device(index[target])):
+                        LOG.warning(f"Pack file for {target} could not be fetched")
 
-            await run_with_heartbeat(
-                do_install, "downloading", f"Still downloading pack for {target}..."
+            await self._run_with_heartbeat(
+                do_install,
+                lambda s: progress("downloading", f"Still downloading pack for {target}... ({s}s)"),
             )
 
-            push({"type": "pack_progress", "install_id": install_id,
-                  "phase": "registering",
-                  "msg": "Registering target with PyOCD..."})
+            progress("registering", "Registering target with PyOCD...")
 
             def register():
                 from pyocd.target.pack.pack_target import ManagedPacks
