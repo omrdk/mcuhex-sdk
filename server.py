@@ -48,10 +48,11 @@ PACK_HEARTBEAT_SECS = 5
 MAX_UPLOAD_BYTES = 16 * 1024 * 1024
 MAX_WS_MESSAGE_BYTES = 24 * 1024 * 1024
 
-# How often a running capture hands over what it has taken so far. Short enough
-# that a plot advances while the eye is on it, long enough that a fast capture
-# is not spending its budget on framing instead of reads.
-CAPTURE_PROGRESS_S = 0.25
+# How often a running capture hands over what it has taken so far. The plot
+# redraws once per batch, so this is its frame period: a trace that steps
+# thirty times a second. The check runs once per sample, so below ~30 Hz a
+# batch still carries a single row and the wire cost stays the same.
+CAPTURE_PROGRESS_S = 1 / 30
 
 
 def loggable(message: Dict[str, Any]) -> Dict[str, Any]:
